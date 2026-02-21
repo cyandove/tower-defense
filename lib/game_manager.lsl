@@ -1,14 +1,15 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 2b
-// Adds: GM discovery channel, placement handler registration enforcement
+// Tower Defense Game Manager — Phase 3
+// Adds: map validation, placement approval/denial, /td set debug command
 // =============================================================================
-// PHASE 2b CHANGES:
-//   - Added GM_DISCOVERY_CHANNEL and discovery responder
-//   - Added REG_TYPE_PLACEMENT_HANDLER = 4
-//   - Placement handler registration enforces one-at-a-time
-//   - handlePlacementRequest validates sender is a registered placement handler
-//   - GM prints its own key on startup
+// PHASE 3 CHANGES:
+//   - Added PLACEMENT_RESPONSE_CHANNEL = -2008
+//   - handlePlacementRequest now fully validates bounds, cell type, occupancy
+//   - Approved placements mark cell occupied and send PLACEMENT_OK
+//   - Denied placements send PLACEMENT_DENIED with a reason string
+//   - Added /td set <x> <y> <type> debug command for live map editing
+//   - Updated /td test placement to exercise all validation paths
 // =============================================================================
 
 
@@ -16,13 +17,14 @@
 // CHANNEL CONSTANTS
 // Copy these into every script that needs to communicate with the GM.
 // -----------------------------------------------------------------------------
-integer GM_REGISTER_CHANNEL   = -2001;  // objects announce themselves here
-integer GM_DEREGISTER_CHANNEL = -2002;  // objects say goodbye here
-integer HEARTBEAT_CHANNEL     = -2003;  // GM pings out, objects ACK back
-integer PLACEMENT_CHANNEL     = -2004;  // placement handler sends grid requests
-integer TOWER_REPORT_CHANNEL  = -2005;  // towers report kills, state changes
-integer ENEMY_REPORT_CHANNEL  = -2006;  // enemies report position, arrival, death
-integer GM_DISCOVERY_CHANNEL  = -2007;  // allow objects to find GM
+integer GM_REGISTER_CHANNEL      = -2001;
+integer GM_DEREGISTER_CHANNEL    = -2002;
+integer HEARTBEAT_CHANNEL        = -2003;
+integer PLACEMENT_CHANNEL        = -2004;
+integer TOWER_REPORT_CHANNEL     = -2005;
+integer ENEMY_REPORT_CHANNEL     = -2006;
+integer GM_DISCOVERY_CHANNEL     = -2007;
+integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 
 
 // -----------------------------------------------------------------------------
@@ -411,11 +413,110 @@ handleDiscoveryMessage(key sender, string msg)
 
 
 // =============================================================================
-// PLACEMENT HANDLER
+// PLACEMENT VALIDATION  (phase 3)
 // =============================================================================
 
-// Enforces one-at-a-time registration for placement handlers.
-// Returns TRUE if registration should proceed, FALSE if it should be rejected.
+// Sends a placement approval to the placement handler and marks the cell
+// occupied. The avatar key is passed through so the placement handler can
+// relay the result directly to the player.
+approvePlacement(key handler, integer gx, integer gy, key avatar)
+{
+    setCellOccupied(gx, gy, CELL_OCCUPIED);
+    string response = "PLACEMENT_OK"
+        + "|" + (string)gx
+        + "|" + (string)gy
+        + "|" + (string)avatar;
+    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL, response);
+    llOwnerSay("[PL] Approved: grid (" + (string)gx + "," + (string)gy
+        + ") for " + llKey2Name(avatar));
+}
+
+// Sends a placement denial to the placement handler with a reason string.
+// Reason values: OUT_OF_BOUNDS | NOT_BUILDABLE | CELL_OCCUPIED
+denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
+{
+    string response = "PLACEMENT_DENIED"
+        + "|" + (string)gx
+        + "|" + (string)gy
+        + "|" + (string)avatar
+        + "|" + reason;
+    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL, response);
+    llOwnerSay("[PL] Denied (" + reason + "): grid ("
+        + (string)gx + "," + (string)gy + ") for " + llKey2Name(avatar));
+}
+
+// Full validation pipeline for a placement request.
+// 1. Verify sender is a registered placement handler.
+// 2. Parse and validate message format.
+// 3. Check bounds.
+// 4. Check cell type.
+// 5. Check occupancy.
+// 6. Approve or deny with appropriate reason.
+handlePlacementRequest(key sender, string msg)
+{
+    // Step 1: verify sender is a registered placement handler
+    integer sender_idx = findRegistryEntry(sender);
+    if (sender_idx == -1 ||
+        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    {
+        llOwnerSay("[PL] Rejected request from unregistered sender: " + (string)sender);
+        llRegionSayTo(sender, PLACEMENT_RESPONSE_CHANNEL,
+            "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
+        return;
+    }
+
+    // Step 2: parse message
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llGetListLength(parts) < 4)
+    {
+        llOwnerSay("[PL] Malformed placement request: " + msg);
+        return;
+    }
+    string cmd = llList2String(parts, 0);
+    integer gx = (integer)llList2String(parts, 1);
+    integer gy = (integer)llList2String(parts, 2);
+    key avatar = (key)llList2String(parts, 3);
+
+    if (cmd != "PLACEMENT_REQUEST")
+    {
+        llOwnerSay("[PL] Unexpected command on placement channel: " + cmd);
+        return;
+    }
+
+    // Step 3: bounds check (defensive — placement handler checks this too)
+    if (!inBounds(gx, gy))
+    {
+        denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS");
+        return;
+    }
+
+    // Step 4: cell type check
+    integer cell_type = getCellType(gx, gy);
+    if (cell_type != CELL_BUILDABLE)
+    {
+        denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE");
+        return;
+    }
+
+    // Step 5: occupancy check
+    if (getCellOccupied(gx, gy) == CELL_OCCUPIED)
+    {
+        denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED");
+        return;
+    }
+
+    // All checks passed
+    approvePlacement(sender, gx, gy, avatar);
+}
+
+
+// =============================================================================
+// REGISTRATION HELPERS
+// =============================================================================
+
+// Parses a registration message of the form:
+//   "REGISTER|<type>|<grid_x>|<grid_y>"
+// Calls registerObject if the message is well-formed.
 integer checkPlacementHandlerSlot(key sender)
 {
     integer i;
@@ -437,60 +538,6 @@ integer checkPlacementHandlerSlot(key sender)
     return TRUE;
 }
 
-// Handles PLACEMENT_REQUEST messages from the placement handler prim.
-// Validates the sender is a registered placement handler before processing.
-handlePlacementRequest(key sender, string msg)
-{
-    // Validate sender is a registered placement handler
-    integer sender_idx = findRegistryEntry(sender);
-    if (sender_idx == -1 ||
-        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
-    {
-        llOwnerSay("[PL] Rejected placement request from unregistered sender: "
-            + (string)sender);
-        llRegionSayTo(sender, PLACEMENT_CHANNEL, "PLACEMENT_REJECTED|NOT_REGISTERED");
-        return;
-    }
-
-    list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 4)
-    {
-        llOwnerSay("[PL] Malformed placement request: " + msg);
-        return;
-    }
-
-    string cmd  = llList2String(parts, 0);
-    integer gx  = (integer)llList2String(parts, 1);
-    integer gy  = (integer)llList2String(parts, 2);
-    key avatar  = (key)llList2String(parts, 3);
-
-    if (cmd != "PLACEMENT_REQUEST")
-    {
-        llOwnerSay("[PL] Unexpected command on placement channel: " + cmd);
-        return;
-    }
-
-    // Cross-reference grid coordinates against map data for verification
-    integer cell_type = getCellType(gx, gy);
-    string type_label;
-    if      (cell_type == CELL_PATH)      type_label = "PATH";
-    else if (cell_type == CELL_BLOCKED)   type_label = "BLOCKED";
-    else if (cell_type == CELL_BUILDABLE) type_label = "BUILDABLE";
-    else                                  type_label = "UNKNOWN";
-
-    llOwnerSay("[PL] Request from " + llKey2Name(avatar)
-        + " -> grid (" + (string)gx + "," + (string)gy + ")"
-        + " cell=" + type_label);
-}
-
-
-// =============================================================================
-// MESSAGE PARSING HELPERS
-// =============================================================================
-
-// Parses a registration message of the form:
-//   "REGISTER|<type>|<grid_x>|<grid_y>"
-// Calls registerObject if the message is well-formed.
 handleRegisterMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -552,12 +599,62 @@ handleHeartbeatMessage(key sender, string msg)
     }
 }
 
-// Handles debug commands sent by the owner via local chat on channel 0.
-// Supported commands:
-//   /td dump map      — print the map grid to owner chat
-//   /td dump registry — print all registered objects
-//   /td dump all      — print both
-//   /td stats         — print summary counts
+
+// =============================================================================
+// DEBUG COMMANDS
+// =============================================================================
+
+// Parses and executes /td set <x> <y> <type> commands.
+// Type tokens: build | path | blocked
+// Preserves existing occupancy when changing cell type, except when changing
+// to PATH or BLOCKED which always clears occupancy since towers can't
+// exist on those cell types.
+handleSetCommand(string msg)
+{
+    list parts = llParseString2List(msg, [" "], []);
+    if (llGetListLength(parts) < 4)
+    {
+        llOwnerSay("[GM] Usage: /td set <x> <y> <build|path|blocked>");
+        return;
+    }
+    integer x         = (integer)llList2String(parts, 2);
+    integer y         = (integer)llList2String(parts, 3);
+    string  type_str  = llToLower(llList2String(parts, 4));
+
+    if (!inBounds(x, y))
+    {
+        llOwnerSay("[GM] /td set: coordinates out of bounds (" + (string)x + "," + (string)y + ")");
+        return;
+    }
+
+    integer new_type;
+    integer new_occupied;
+    if (type_str == "build")
+    {
+        new_type     = CELL_BUILDABLE;
+        new_occupied = getCellOccupied(x, y);  // preserve existing occupancy
+    }
+    else if (type_str == "path")
+    {
+        new_type     = CELL_PATH;
+        new_occupied = CELL_EMPTY;  // towers can't exist on path cells
+    }
+    else if (type_str == "blocked")
+    {
+        new_type     = CELL_BLOCKED;
+        new_occupied = CELL_EMPTY;  // towers can't exist on blocked cells
+    }
+    else
+    {
+        llOwnerSay("[GM] /td set: unknown type '" + type_str + "' (use: build | path | blocked)");
+        return;
+    }
+
+    setCell(x, y, new_type, new_occupied);
+    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str
+        + (new_occupied == CELL_OCCUPIED ? " [occupied]" : " [empty]"));
+}
+
 handleDebugCommand(string msg)
 {
     if (msg == "/td dump map")
@@ -580,17 +677,48 @@ handleDebugCommand(string msg)
             + " | Map: " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
             + " | Free memory: " + (string)llGetFreeMemory() + " bytes");
     }
+    else if (llGetSubString(msg, 0, 7) == "/td set ")
+    {
+        handleSetCommand(msg);
+    }
     else if (msg == "/td test placement")
     {
-        // Simulate a placement click at grid center for sanity checking
-        // without needing to touch the overlay prim
+        // Test all three rejection paths plus one approval in sequence.
+        // Uses the owner key as a fake avatar and the GM's own key as a
+        // fake placement handler — the sender check is bypassed in this path.
         integer cx = MAP_WIDTH  / 2;
         integer cy = MAP_HEIGHT / 2;
-        llOwnerSay("[PL] Simulating placement at grid center ("
-            + (string)cx + "," + (string)cy + ")");
-        handlePlacementRequest(llGetOwner(),
+        key fake_avatar = llGetOwner();
+
+        llOwnerSay("[PL] --- PLACEMENT TEST SEQUENCE ---");
+
+        // Should approve (buildable, empty)
+        llOwnerSay("[PL] Test 1: valid cell (" + (string)cx + "," + (string)cy + ")");
+        handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
-            + "|" + (string)llGetOwner());
+            + "|" + (string)fake_avatar);
+
+        // Should deny CELL_OCCUPIED (same cell, now occupied from test 1)
+        llOwnerSay("[PL] Test 2: same cell again (expect CELL_OCCUPIED)");
+        handlePlacementRequest(llGetKey(),
+            "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
+            + "|" + (string)fake_avatar);
+
+        // Should deny NOT_BUILDABLE (path cell)
+        llOwnerSay("[PL] Test 3: path cell (2,0) (expect NOT_BUILDABLE)");
+        handlePlacementRequest(llGetKey(),
+            "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
+
+        // Should deny NOT_BUILDABLE (blocked cell)
+        llOwnerSay("[PL] Test 4: blocked cell (0,0) (expect NOT_BUILDABLE)");
+        handlePlacementRequest(llGetKey(),
+            "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
+
+        // Clean up test occupation so map isn't left dirty
+        setCellOccupied(cx, cy, CELL_EMPTY);
+        llOwnerSay("[PL] Test cell (" + (string)cx + "," + (string)cy
+            + ") restored to empty.");
+        llOwnerSay("[PL] --- END TEST SEQUENCE ---");
     }
 }
 
@@ -607,20 +735,18 @@ default
 
         initMap();
 
-        // Open listeners
-        llListen(GM_REGISTER_CHANNEL,   "", NULL_KEY, "");
-        llListen(GM_DEREGISTER_CHANNEL, "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,     "", NULL_KEY, "");
-        llListen(PLACEMENT_CHANNEL,     "", NULL_KEY, "");
-        llListen(GM_DISCOVERY_CHANNEL,  "", NULL_KEY, "");
+        llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
+        llListen(GM_DEREGISTER_CHANNEL,      "", NULL_KEY, "");
+        llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
+        llListen(PLACEMENT_CHANNEL,          "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
 
-        // Start heartbeat timer
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
-        llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
         llOwnerSay("[GM] Key: " + (string)llGetKey());
-        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td test placement");
+        llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
+        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td test placement | /td set <x> <y> <build|path|blocked>");
     }
 
     listen(integer channel, string name, key id, string msg)

@@ -1,15 +1,13 @@
 // =============================================================================
 // placement_handler.lsl
-// Tower Defense Placement Handler — Phase 2b
-// Adds: GM discovery flow, registration with enforcement
+// Tower Defense Placement Handler — Phase 3
+// Adds: PLACEMENT_RESPONSE_CHANNEL listener, avatar result relay
 // =============================================================================
-// PHASE 2b CHANGES:
-//   - Broadcasts GM_DISCOVER on startup to find GM key automatically
-//   - Retries discovery every DISCOVERY_RETRY_INTERVAL seconds until found
-//   - Registers as REG_TYPE_PLACEMENT_HANDLER after GM key is confirmed
-//   - Handles REGISTER_OK and REGISTER_REJECTED responses
-//   - Blocks placement requests until registered successfully
-//   - Responds to heartbeat PINGs from the GM
+// PHASE 3 CHANGES:
+//   - Added PLACEMENT_RESPONSE_CHANNEL = -2008 listener
+//   - Handles PLACEMENT_OK and PLACEMENT_DENIED responses from GM
+//   - Relays outcome to the clicking avatar via llRegionSayTo
+//   - Human-readable denial reasons shown to avatar
 // =============================================================================
 //
 // SETUP INSTRUCTIONS:
@@ -32,11 +30,12 @@
 // CHANNEL CONSTANTS
 // Must match game_manager.lsl exactly.
 // -----------------------------------------------------------------------------
-integer GM_REGISTER_CHANNEL   = -2001;
-integer GM_DEREGISTER_CHANNEL = -2002;
-integer HEARTBEAT_CHANNEL     = -2003;
-integer PLACEMENT_CHANNEL     = -2004;
-integer GM_DISCOVERY_CHANNEL  = -2007;
+integer GM_REGISTER_CHANNEL        = -2001;
+integer GM_DEREGISTER_CHANNEL      = -2002;
+integer HEARTBEAT_CHANNEL          = -2003;
+integer PLACEMENT_CHANNEL          = -2004;
+integer GM_DISCOVERY_CHANNEL       = -2007;
+integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 
 
 // -----------------------------------------------------------------------------
@@ -208,6 +207,59 @@ sendPlacementRequest(integer grid_x, integer grid_y, key avatar)
 }
 
 
+// -----------------------------------------------------------------------------
+// PLACEMENT RESPONSE HANDLER  (phase 3)
+// -----------------------------------------------------------------------------
+
+// Translates a denial reason code into a human-readable message for the avatar.
+string reasonToMessage(string reason)
+{
+    if (reason == "NOT_BUILDABLE") return "You can't build there.";
+    if (reason == "CELL_OCCUPIED") return "That spot is already occupied.";
+    if (reason == "OUT_OF_BOUNDS") return "That location is outside the play area.";
+    if (reason == "NOT_REGISTERED") return "Placement system error — handler not registered.";
+    return "Placement denied (" + reason + ").";
+}
+
+// Handles PLACEMENT_OK and PLACEMENT_DENIED messages from the GM.
+// Relays the outcome directly to the avatar who clicked.
+handlePlacementResponse(string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+
+    if (llGetListLength(parts) < 4)
+    {
+        llOwnerSay("[PH] Malformed placement response: " + msg);
+        return;
+    }
+
+    integer gx  = (integer)llList2String(parts, 1);
+    integer gy  = (integer)llList2String(parts, 2);
+    key avatar  = (key)llList2String(parts, 3);
+
+    if (cmd == "PLACEMENT_OK")
+    {
+        llRegionSayTo(avatar, 0,
+            "Tower placed at grid (" + (string)gx + "," + (string)gy + ").");
+        llOwnerSay("[PH] PLACEMENT_OK relayed to " + llKey2Name(avatar)
+            + " for grid (" + (string)gx + "," + (string)gy + ")");
+    }
+    else if (cmd == "PLACEMENT_DENIED")
+    {
+        string reason = llList2String(parts, 4);
+        llRegionSayTo(avatar, 0, reasonToMessage(reason));
+        llOwnerSay("[PH] PLACEMENT_DENIED (" + reason + ") relayed to "
+            + llKey2Name(avatar)
+            + " for grid (" + (string)gx + "," + (string)gy + ")");
+    }
+    else
+    {
+        llOwnerSay("[PH] Unknown placement response command: " + cmd);
+    }
+}
+
+
 // =============================================================================
 // MAIN STATE
 // =============================================================================
@@ -218,9 +270,10 @@ default
     {
         initGridFromPrim();
 
-        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
-        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
+        llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
+        llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
+        llListen(PLACEMENT_RESPONSE_CHANNEL, "", NULL_KEY, "");
 
         llOwnerSay("[PH] Placement handler ready.");
         llOwnerSay("[PH] Prim position: " + (string)llGetPos());
@@ -250,6 +303,10 @@ default
         else if (channel == HEARTBEAT_CHANNEL && id == gGM_KEY)
         {
             handleHeartbeat(msg);
+        }
+        else if (channel == PLACEMENT_RESPONSE_CHANNEL && id == gGM_KEY)
+        {
+            handlePlacementResponse(msg);
         }
     }
 
