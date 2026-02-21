@@ -1,15 +1,16 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 3
-// Adds: map validation, placement approval/denial, /td set debug command
+// Tower Defense Game Manager — Phase 4
+// Adds: enemy position table, arrival handling, wave control, /td wave start
 // =============================================================================
-// PHASE 3 CHANGES:
-//   - Added PLACEMENT_RESPONSE_CHANNEL = -2008
-//   - handlePlacementRequest now fully validates bounds, cell type, occupancy
-//   - Approved placements mark cell occupied and send PLACEMENT_OK
-//   - Denied placements send PLACEMENT_DENIED with a reason string
-//   - Added /td set <x> <y> <type> debug command for live map editing
-//   - Updated /td test placement to exercise all validation paths
+// PHASE 4 CHANGES:
+//   - Added SPAWNER_CHANNEL = -2009
+//   - Added ENEMY_CHANNEL   = -2010
+//   - Added gEnemyPositions position table (strided list, EP_STRIDE = 5)
+//   - Added handleEnemyReport() for ENEMY_POSITION and ENEMY_ARRIVED messages
+//   - Added handleSpawnerReport() for SPAWNER_READY acknowledgement
+//   - Added /td wave start debug command to trigger spawning manually
+//   - Sender check bypass in handlePlacementRequest for GM self-test
 // =============================================================================
 
 
@@ -17,14 +18,16 @@
 // CHANNEL CONSTANTS
 // Copy these into every script that needs to communicate with the GM.
 // -----------------------------------------------------------------------------
-integer GM_REGISTER_CHANNEL      = -2001;
-integer GM_DEREGISTER_CHANNEL    = -2002;
-integer HEARTBEAT_CHANNEL        = -2003;
-integer PLACEMENT_CHANNEL        = -2004;
-integer TOWER_REPORT_CHANNEL     = -2005;
-integer ENEMY_REPORT_CHANNEL     = -2006;
-integer GM_DISCOVERY_CHANNEL     = -2007;
+integer GM_REGISTER_CHANNEL        = -2001;
+integer GM_DEREGISTER_CHANNEL      = -2002;
+integer HEARTBEAT_CHANNEL          = -2003;
+integer PLACEMENT_CHANNEL          = -2004;
+integer TOWER_REPORT_CHANNEL       = -2005;
+integer ENEMY_REPORT_CHANNEL       = -2006;
+integer GM_DISCOVERY_CHANNEL       = -2007;
 integer PLACEMENT_RESPONSE_CHANNEL = -2008;
+integer SPAWNER_CHANNEL            = -2009;
+integer ENEMY_CHANNEL              = -2010;
 
 
 // -----------------------------------------------------------------------------
@@ -32,19 +35,12 @@ integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 // -----------------------------------------------------------------------------
 integer MAP_WIDTH  = 10;
 integer MAP_HEIGHT = 10;
-
-// Each cell in gMap occupies CELL_STRIDE consecutive list entries:
-//   [0] cell type   (CELL_BLOCKED | CELL_BUILDABLE | CELL_PATH)
-//   [1] occupied    (CELL_EMPTY   | CELL_OCCUPIED)
-//   [2] reserved    (future use, e.g. tower key or modifier flags)
 integer CELL_STRIDE = 3;
 
-// Cell type values
 integer CELL_BLOCKED   = 0;
 integer CELL_BUILDABLE = 1;
 integer CELL_PATH      = 2;
 
-// Occupied flag values
 integer CELL_EMPTY    = 0;
 integer CELL_OCCUPIED = 1;
 
@@ -52,12 +48,6 @@ integer CELL_OCCUPIED = 1;
 // -----------------------------------------------------------------------------
 // REGISTRY CONSTANTS
 // -----------------------------------------------------------------------------
-// Each entry in gRegistry occupies REG_STRIDE consecutive list entries:
-//   [0] object key        (string cast of key)
-//   [1] object type       (REG_TYPE_*)
-//   [2] grid x            (integer, position at registration time)
-//   [3] grid y            (integer, position at registration time)
-//   [4] last_seen         (integer unix timestamp from llGetUnixTime)
 integer REG_STRIDE = 5;
 
 integer REG_TYPE_TOWER             = 1;
@@ -67,51 +57,57 @@ integer REG_TYPE_PLACEMENT_HANDLER = 4;
 
 
 // -----------------------------------------------------------------------------
+// ENEMY POSITION TABLE CONSTANTS
+// gEnemyPositions is a strided list tracking live enemy positions.
+// Each entry: [key, pos_x, pos_y, pos_z, last_update_timestamp]
+// -----------------------------------------------------------------------------
+integer EP_STRIDE = 5;
+
+
+// -----------------------------------------------------------------------------
 // HEARTBEAT CONSTANTS
 // -----------------------------------------------------------------------------
-integer HEARTBEAT_INTERVAL = 10;  // seconds between heartbeat cycles
-integer HEARTBEAT_TIMEOUT  = 3;   // missed cycles before an object is culled
+integer HEARTBEAT_INTERVAL = 10;
+integer HEARTBEAT_TIMEOUT  = 3;
 
 
 // -----------------------------------------------------------------------------
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
-list gMap      = [];  // MAP_WIDTH * MAP_HEIGHT * CELL_STRIDE entries
-list gRegistry = [];  // variable length, REG_STRIDE entries per object
-integer gHeartbeatSeq = 0;  // increments each heartbeat cycle
+list    gMap             = [];
+list    gRegistry        = [];
+list    gEnemyPositions  = [];   // live enemy position table
+integer gHeartbeatSeq    = 0;
+integer gLives           = 20;   // stubbed — decremented on enemy arrival
+integer gWaveActive      = FALSE;
 
 
 // =============================================================================
 // MAP HELPERS
 // =============================================================================
 
-// Returns the flat list index for the start of a cell's data block.
 integer cellIndex(integer x, integer y)
 {
     return (y * MAP_WIDTH + x) * CELL_STRIDE;
 }
 
-// Returns TRUE if (x, y) is within map bounds.
 integer inBounds(integer x, integer y)
 {
     return (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT);
 }
 
-// Returns the cell type at (x, y), or CELL_BLOCKED if out of bounds.
 integer getCellType(integer x, integer y)
 {
     if (!inBounds(x, y)) return CELL_BLOCKED;
     return llList2Integer(gMap, cellIndex(x, y));
 }
 
-// Returns the occupied flag at (x, y), or CELL_OCCUPIED if out of bounds.
 integer getCellOccupied(integer x, integer y)
 {
     if (!inBounds(x, y)) return CELL_OCCUPIED;
     return llList2Integer(gMap, cellIndex(x, y) + 1);
 }
 
-// Writes type and occupied flag to a cell. Reserved field is set to 0.
 setCell(integer x, integer y, integer type, integer occupied)
 {
     if (!inBounds(x, y))
@@ -123,7 +119,6 @@ setCell(integer x, integer y, integer type, integer occupied)
     gMap = llListReplaceList(gMap, [type, occupied, 0], idx, idx + CELL_STRIDE - 1);
 }
 
-// Marks a cell as occupied (e.g. after a tower is placed).
 setCellOccupied(integer x, integer y, integer flag)
 {
     if (!inBounds(x, y)) return;
@@ -131,14 +126,11 @@ setCellOccupied(integer x, integer y, integer flag)
     gMap = llListReplaceList(gMap, [flag], idx, idx);
 }
 
-// Returns TRUE if a tower can be placed at (x, y).
 integer isPlaceable(integer x, integer y)
 {
     return (getCellType(x, y) == CELL_BUILDABLE && getCellOccupied(x, y) == CELL_EMPTY);
 }
 
-// Initializes gMap to all BUILDABLE/EMPTY, then stamps path and blocked cells.
-// Edit the path and blocked sections below to match your actual map layout.
 initMap()
 {
     gMap = [];
@@ -149,46 +141,27 @@ initMap()
         gMap += [CELL_BUILDABLE, CELL_EMPTY, 0];
     }
 
-    // ------------------------------------------------------------------
-    // PATH DEFINITION
-    // Define the enemy path as a sequence of cells. Edit this to match
-    // your map. The path below traces a simple S-curve across a 10x10 grid:
-    //   Enter from top of column 2, snake across, exit at bottom of column 7.
-    // ------------------------------------------------------------------
-
-    // Column 2, top to row 4 (entry corridor)
     setCell(2, 0, CELL_PATH, CELL_EMPTY);
     setCell(2, 1, CELL_PATH, CELL_EMPTY);
     setCell(2, 2, CELL_PATH, CELL_EMPTY);
     setCell(2, 3, CELL_PATH, CELL_EMPTY);
     setCell(2, 4, CELL_PATH, CELL_EMPTY);
-
-    // Row 4, columns 2 to 7 (first horizontal)
     setCell(3, 4, CELL_PATH, CELL_EMPTY);
     setCell(4, 4, CELL_PATH, CELL_EMPTY);
     setCell(5, 4, CELL_PATH, CELL_EMPTY);
     setCell(6, 4, CELL_PATH, CELL_EMPTY);
     setCell(7, 4, CELL_PATH, CELL_EMPTY);
-
-    // Column 7, rows 4 to 7 (right corridor)
     setCell(7, 5, CELL_PATH, CELL_EMPTY);
     setCell(7, 6, CELL_PATH, CELL_EMPTY);
     setCell(7, 7, CELL_PATH, CELL_EMPTY);
-
-    // Row 7, columns 7 to 2 (second horizontal, reversed)
     setCell(6, 7, CELL_PATH, CELL_EMPTY);
     setCell(5, 7, CELL_PATH, CELL_EMPTY);
     setCell(4, 7, CELL_PATH, CELL_EMPTY);
     setCell(3, 7, CELL_PATH, CELL_EMPTY);
     setCell(2, 7, CELL_PATH, CELL_EMPTY);
-
-    // Column 2, rows 7 to 9 (exit corridor)
     setCell(2, 8, CELL_PATH, CELL_EMPTY);
     setCell(2, 9, CELL_PATH, CELL_EMPTY);
 
-    // ------------------------------------------------------------------
-    // BLOCKED CELLS (obstacles, decorative elements, out-of-bounds areas)
-    // ------------------------------------------------------------------
     setCell(0, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(1, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(9, 9, CELL_BLOCKED, CELL_EMPTY);
@@ -197,8 +170,6 @@ initMap()
     llOwnerSay("[MAP] Initialized " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT + " grid.");
 }
 
-// Debug utility: dumps the entire map to owner chat as a visual grid.
-// B = buildable, P = path, X = blocked. Lowercase = occupied.
 dumpMap()
 {
     llOwnerSay("[MAP] --- MAP DUMP (y=0 top, y=" + (string)(MAP_HEIGHT-1) + " bottom) ---");
@@ -228,20 +199,16 @@ dumpMap()
 // REGISTRY HELPERS
 // =============================================================================
 
-// Returns the flat list index for the start of an object's registry entry,
-// or -1 if the key is not found.
 integer findRegistryEntry(key id)
 {
     return llListFindList(gRegistry, [(string)id]);
 }
 
-// Adds a new registry entry, or refreshes the timestamp if already registered.
 registerObject(key id, integer obj_type, integer gx, integer gy)
 {
     integer existing = findRegistryEntry(id);
     if (existing != -1)
     {
-        // Already registered — update timestamp only.
         gRegistry = llListReplaceList(gRegistry,
             [llGetUnixTime()],
             existing + 4, existing + 4);
@@ -254,7 +221,6 @@ registerObject(key id, integer obj_type, integer gx, integer gy)
         + " grid=(" + (string)gx + "," + (string)gy + ")");
 }
 
-// Removes an object from the registry by key.
 deregisterObject(key id)
 {
     integer idx = findRegistryEntry(id);
@@ -270,21 +236,21 @@ deregisterObject(key id)
 
     gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
 
-    // Free map cell if this was a tower (phase 3 will own this fully,
-    // but we keep it here so deregistration stays consistent)
     if (obj_type == REG_TYPE_TOWER)
         setCellOccupied(gx, gy, CELL_EMPTY);
+
+    // Clean up position table if this was an enemy
+    if (obj_type == REG_TYPE_ENEMY)
+        removeEnemyPosition(id);
 
     llOwnerSay("[REG] Deregistered: " + (string)id);
 }
 
-// Returns the number of currently registered objects.
 integer registryCount()
 {
     return llGetListLength(gRegistry) / REG_STRIDE;
 }
 
-// Debug utility: dumps the full registry to owner chat.
 dumpRegistry()
 {
     integer count = registryCount();
@@ -320,8 +286,6 @@ dumpRegistry()
 // HEARTBEAT HELPERS
 // =============================================================================
 
-// Sends a PING to every registered object on HEARTBEAT_CHANNEL.
-// Each object is expected to reply with "ACK|<seq>" on the same channel.
 sendHeartbeat()
 {
     gHeartbeatSeq++;
@@ -339,9 +303,6 @@ sendHeartbeat()
         + " to " + (string)count + " object(s).");
 }
 
-// Updates the last_seen timestamp for an object that has ACKed a heartbeat.
-// Ignores ACKs with a sequence number that doesn't match the current cycle,
-// since stale ACKs from a lagged object shouldn't reset its timeout clock.
 receiveHeartbeatAck(key id, integer seq)
 {
     if (seq != gHeartbeatSeq)
@@ -351,15 +312,12 @@ receiveHeartbeatAck(key id, integer seq)
         return;
     }
     integer idx = findRegistryEntry(id);
-    if (idx == -1) return;  // ACK from an unregistered object, ignore
+    if (idx == -1) return;
     gRegistry = llListReplaceList(gRegistry,
         [llGetUnixTime()],
         idx + 4, idx + 4);
 }
 
-// Walks the registry in reverse and removes objects whose last_seen timestamp
-// is older than HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT seconds.
-// Reverse iteration ensures deletions don't shift indices of unvisited entries.
 cullStaleObjects()
 {
     integer threshold = llGetUnixTime() - (HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT);
@@ -386,6 +344,9 @@ cullStaleObjects()
             if (obj_type == REG_TYPE_TOWER)
                 setCellOccupied(gx, gy, CELL_EMPTY);
 
+            if (obj_type == REG_TYPE_ENEMY)
+                removeEnemyPosition((key)culled_key);
+
             culled_count++;
         }
     }
@@ -402,8 +363,6 @@ cullStaleObjects()
 // DISCOVERY
 // =============================================================================
 
-// Responds to GM_DISCOVER broadcasts so objects can find the GM's key
-// without it being hardcoded.
 handleDiscoveryMessage(key sender, string msg)
 {
     if (msg != "GM_DISCOVER") return;
@@ -413,12 +372,150 @@ handleDiscoveryMessage(key sender, string msg)
 
 
 // =============================================================================
-// PLACEMENT VALIDATION  (phase 3)
+// ENEMY POSITION TABLE  (phase 4)
 // =============================================================================
 
-// Sends a placement approval to the placement handler and marks the cell
-// occupied. The avatar key is passed through so the placement handler can
-// relay the result directly to the player.
+// Returns the flat list index for an enemy's position entry, or -1 if not found.
+integer findEnemyPosition(key id)
+{
+    return llListFindList(gEnemyPositions, [(string)id]);
+}
+
+// Inserts or updates an enemy's position in the table.
+upsertEnemyPosition(key id, vector pos)
+{
+    integer idx = findEnemyPosition(id);
+    if (idx == -1)
+    {
+        gEnemyPositions += [(string)id, pos.x, pos.y, pos.z, llGetUnixTime()];
+    }
+    else
+    {
+        gEnemyPositions = llListReplaceList(gEnemyPositions,
+            [pos.x, pos.y, pos.z, llGetUnixTime()],
+            idx + 1, idx + 4);
+    }
+}
+
+// Removes an enemy from the position table.
+removeEnemyPosition(key id)
+{
+    integer idx = findEnemyPosition(id);
+    if (idx != -1)
+        gEnemyPositions = llDeleteSubList(gEnemyPositions, idx, idx + EP_STRIDE - 1);
+}
+
+// Returns the number of enemies currently tracked in the position table.
+integer enemyCount()
+{
+    return llGetListLength(gEnemyPositions) / EP_STRIDE;
+}
+
+
+// =============================================================================
+// ENEMY REPORT HANDLER  (phase 4)
+// =============================================================================
+
+// Handles messages from enemies on ENEMY_REPORT_CHANNEL.
+//
+// Supported message formats:
+//   ENEMY_POSITION|<pos_x>|<pos_y>|<pos_z>
+//     Enemy reporting its current world position. Updates position table.
+//
+//   ENEMY_ARRIVED
+//     Enemy has reached the final waypoint. Decrements lives, cleans up.
+handleEnemyReport(key sender, string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+
+    if (cmd == "ENEMY_POSITION")
+    {
+        if (llGetListLength(parts) < 4)
+        {
+            llOwnerSay("[EN] Malformed ENEMY_POSITION from " + (string)sender);
+            return;
+        }
+        vector pos = <(float)llList2String(parts, 1),
+                      (float)llList2String(parts, 2),
+                      (float)llList2String(parts, 3)>;
+        upsertEnemyPosition(sender, pos);
+        // Position updates are frequent — only log occasionally to avoid spam.
+        // Uncomment the line below for verbose position debugging:
+        // llOwnerSay("[EN] Position update from " + (string)sender + ": " + (string)pos);
+    }
+    else if (cmd == "ENEMY_ARRIVED")
+    {
+        gLives--;
+        llOwnerSay("[EN] Enemy " + (string)sender + " reached the end. Lives remaining: "
+            + (string)gLives);
+        removeEnemyPosition(sender);
+        deregisterObject(sender);
+    }
+    else
+    {
+        llOwnerSay("[EN] Unknown enemy report command: " + cmd + " from " + (string)sender);
+    }
+}
+
+
+// =============================================================================
+// SPAWNER HANDLER  (phase 4)
+// =============================================================================
+
+// Handles messages from the spawner on SPAWNER_CHANNEL.
+//
+// Supported message formats:
+//   SPAWNER_READY
+//     Spawner has initialized and is ready to receive wave commands.
+handleSpawnerReport(key sender, string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+
+    if (cmd == "SPAWNER_READY")
+    {
+        llOwnerSay("[SP] Spawner ready: " + (string)sender);
+    }
+    else
+    {
+        llOwnerSay("[SP] Unknown spawner message: " + cmd);
+    }
+}
+
+// Sends a WAVE_START command to all registered spawners.
+// In phase 4 this triggers a single enemy spawn for testing.
+// Wave count and enemy type parameters will be added in a later phase.
+startWave()
+{
+    integer count = registryCount();
+    integer sent  = 0;
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx      = i * REG_STRIDE;
+        integer obj_type = llList2Integer(gRegistry, idx + 1);
+        if (obj_type == REG_TYPE_SPAWNER)
+        {
+            key target = (key)llList2String(gRegistry, idx);
+            llRegionSayTo(target, SPAWNER_CHANNEL, "WAVE_START|1");
+            sent++;
+        }
+    }
+    if (sent == 0)
+        llOwnerSay("[GM] /td wave start: no spawners registered.");
+    else
+    {
+        gWaveActive = TRUE;
+        llOwnerSay("[GM] Wave started. Sent WAVE_START to " + (string)sent + " spawner(s).");
+    }
+}
+
+
+// =============================================================================
+// PLACEMENT VALIDATION
+// =============================================================================
+
 approvePlacement(key handler, integer gx, integer gy, key avatar)
 {
     setCellOccupied(gx, gy, CELL_OCCUPIED);
@@ -431,8 +528,6 @@ approvePlacement(key handler, integer gx, integer gy, key avatar)
         + ") for " + llKey2Name(avatar));
 }
 
-// Sends a placement denial to the placement handler with a reason string.
-// Reason values: OUT_OF_BOUNDS | NOT_BUILDABLE | CELL_OCCUPIED
 denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
 {
     string response = "PLACEMENT_DENIED"
@@ -445,16 +540,9 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
         + (string)gx + "," + (string)gy + ") for " + llKey2Name(avatar));
 }
 
-// Full validation pipeline for a placement request.
-// 1. Verify sender is a registered placement handler.
-// 2. Parse and validate message format.
-// 3. Check bounds.
-// 4. Check cell type.
-// 5. Check occupancy.
-// 6. Approve or deny with appropriate reason.
 handlePlacementRequest(key sender, string msg)
 {
-    // Step 1: verify sender is a registered placement handler
+    // Bypass sender check for GM self-test
     if (sender != llGetKey())
     {
         integer sender_idx = findRegistryEntry(sender);
@@ -468,7 +556,6 @@ handlePlacementRequest(key sender, string msg)
         }
     }
 
-    // Step 2: parse message
     list parts = llParseString2List(msg, ["|"], []);
     if (llGetListLength(parts) < 4)
     {
@@ -486,14 +573,12 @@ handlePlacementRequest(key sender, string msg)
         return;
     }
 
-    // Step 3: bounds check (defensive — placement handler checks this too)
     if (!inBounds(gx, gy))
     {
         denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS");
         return;
     }
 
-    // Step 4: cell type check
     integer cell_type = getCellType(gx, gy);
     if (cell_type != CELL_BUILDABLE)
     {
@@ -501,14 +586,12 @@ handlePlacementRequest(key sender, string msg)
         return;
     }
 
-    // Step 5: occupancy check
     if (getCellOccupied(gx, gy) == CELL_OCCUPIED)
     {
         denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED");
         return;
     }
 
-    // All checks passed
     approvePlacement(sender, gx, gy, avatar);
 }
 
@@ -517,9 +600,6 @@ handlePlacementRequest(key sender, string msg)
 // REGISTRATION HELPERS
 // =============================================================================
 
-// Parses a registration message of the form:
-//   "REGISTER|<type>|<grid_x>|<grid_y>"
-// Calls registerObject if the message is well-formed.
 integer checkPlacementHandlerSlot(key sender)
 {
     integer i;
@@ -575,8 +655,6 @@ handleRegisterMessage(key sender, string msg)
     llRegionSayTo(sender, GM_REGISTER_CHANNEL, "REGISTER_OK|" + (string)obj_type);
 }
 
-// Parses a deregistration message of the form:
-//   "DEREGISTER"
 handleDeregisterMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -589,8 +667,6 @@ handleDeregisterMessage(key sender, string msg)
     deregisterObject(sender);
 }
 
-// Parses a heartbeat ACK message of the form:
-//   "ACK|<seq>"
 handleHeartbeatMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -607,11 +683,6 @@ handleHeartbeatMessage(key sender, string msg)
 // DEBUG COMMANDS
 // =============================================================================
 
-// Parses and executes /td set <x> <y> <type> commands.
-// Type tokens: build | path | blocked
-// Preserves existing occupancy when changing cell type, except when changing
-// to PATH or BLOCKED which always clears occupancy since towers can't
-// exist on those cell types.
 handleSetCommand(string msg)
 {
     list parts = llParseString2List(msg, [" "], []);
@@ -620,9 +691,9 @@ handleSetCommand(string msg)
         llOwnerSay("[GM] Usage: /td set <x> <y> <build|path|blocked>");
         return;
     }
-    integer x         = (integer)llList2String(parts, 2);
-    integer y         = (integer)llList2String(parts, 3);
-    string  type_str  = llToLower(llList2String(parts, 4));
+    integer x        = (integer)llList2String(parts, 2);
+    integer y        = (integer)llList2String(parts, 3);
+    string type_str  = llToLower(llList2String(parts, 4));
 
     if (!inBounds(x, y))
     {
@@ -635,17 +706,17 @@ handleSetCommand(string msg)
     if (type_str == "build")
     {
         new_type     = CELL_BUILDABLE;
-        new_occupied = getCellOccupied(x, y);  // preserve existing occupancy
+        new_occupied = getCellOccupied(x, y);
     }
     else if (type_str == "path")
     {
         new_type     = CELL_PATH;
-        new_occupied = CELL_EMPTY;  // towers can't exist on path cells
+        new_occupied = CELL_EMPTY;
     }
     else if (type_str == "blocked")
     {
         new_type     = CELL_BLOCKED;
-        new_occupied = CELL_EMPTY;  // towers can't exist on blocked cells
+        new_occupied = CELL_EMPTY;
     }
     else
     {
@@ -680,6 +751,9 @@ handleDebugCommand(string msg)
     else if (msg == "/td stats")
     {
         llOwnerSay("[GM] Registered objects: " + (string)registryCount()
+            + " | Active enemies: " + (string)enemyCount()
+            + " | Lives: " + (string)gLives
+            + " | Wave active: " + (string)gWaveActive
             + " | Heartbeat seq: " + (string)gHeartbeatSeq
             + " | Map: " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
             + " | Free memory: " + (string)llGetFreeMemory() + " bytes");
@@ -688,43 +762,38 @@ handleDebugCommand(string msg)
     {
         handleSetCommand(msg);
     }
+    else if (msg == "/td wave start")
+    {
+        startWave();
+    }
     else if (msg == "/td test placement")
     {
-        // Test all three rejection paths plus one approval in sequence.
-        // Uses the owner key as a fake avatar and the GM's own key as a
-        // fake placement handler — the sender check is bypassed in this path.
         integer cx = MAP_WIDTH  / 2;
         integer cy = MAP_HEIGHT / 2;
         key fake_avatar = llGetOwner();
 
         llOwnerSay("[PL] --- PLACEMENT TEST SEQUENCE ---");
 
-        // Should approve (buildable, empty)
         llOwnerSay("[PL] Test 1: valid cell (" + (string)cx + "," + (string)cy + ")");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
 
-        // Should deny CELL_OCCUPIED (same cell, now occupied from test 1)
         llOwnerSay("[PL] Test 2: same cell again (expect CELL_OCCUPIED)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
 
-        // Should deny NOT_BUILDABLE (path cell)
         llOwnerSay("[PL] Test 3: path cell (2,0) (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
 
-        // Should deny NOT_BUILDABLE (blocked cell)
         llOwnerSay("[PL] Test 4: blocked cell (0,0) (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
 
-        // Clean up test occupation so map isn't left dirty
         setCellOccupied(cx, cy, CELL_EMPTY);
-        llOwnerSay("[PL] Test cell (" + (string)cx + "," + (string)cy
-            + ") restored to empty.");
+        llOwnerSay("[PL] Test cell (" + (string)cx + "," + (string)cy + ") restored to empty.");
         llOwnerSay("[PL] --- END TEST SEQUENCE ---");
     }
 }
@@ -747,13 +816,15 @@ default
         llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
         llListen(PLACEMENT_CHANNEL,          "", NULL_KEY, "");
         llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
+        llListen(ENEMY_REPORT_CHANNEL,       "", NULL_KEY, "");
+        llListen(SPAWNER_CHANNEL,            "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
 
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
         llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
-        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td test placement | /td set <x> <y> <build|path|blocked>");
+        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td wave start | /td test placement | /td set <x> <y> <build|path|blocked>");
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -778,6 +849,14 @@ default
         {
             handleDiscoveryMessage(id, msg);
         }
+        else if (channel == ENEMY_REPORT_CHANNEL)
+        {
+            handleEnemyReport(id, msg);
+        }
+        else if (channel == SPAWNER_CHANNEL)
+        {
+            handleSpawnerReport(id, msg);
+        }
         else if (channel == 0 && id == llGetOwner())
         {
             if (llGetSubString(msg, 0, 2) == "/td")
@@ -789,11 +868,5 @@ default
     {
         sendHeartbeat();
         cullStaleObjects();
-    }
-
-    on_rez(integer start_param)
-    {
-        // Re-initialize cleanly if the GM prim is re-rezzed
-        llResetScript();
     }
 }
