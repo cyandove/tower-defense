@@ -563,6 +563,7 @@ default
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
         llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
+        llOwnerSay("[GM] Key: " + (string)llGetKey());
         llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td test placement");
     }
 
