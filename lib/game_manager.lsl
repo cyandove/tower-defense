@@ -1,19 +1,20 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 2
-// Adds: placement request listener and coordinate verification logging
+// Tower Defense Game Manager — Phase 2b
+// Adds: GM discovery channel, placement handler registration enforcement
 // =============================================================================
-// PHASE 2 CHANGES:
-//   - Added llListen on PLACEMENT_CHANNEL
-//   - Added handlePlacementRequest() for coordinate verification logging
-//   - Added /td test placement debug command
+// PHASE 2b CHANGES:
+//   - Added GM_DISCOVERY_CHANNEL and discovery responder
+//   - Added REG_TYPE_PLACEMENT_HANDLER = 4
+//   - Placement handler registration enforces one-at-a-time
+//   - handlePlacementRequest validates sender is a registered placement handler
+//   - GM prints its own key on startup
 // =============================================================================
 
 
 // -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS
 // Copy these into every script that needs to communicate with the GM.
-// All channels are negative to avoid interference with public chat.
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;  // objects announce themselves here
 integer GM_DEREGISTER_CHANNEL = -2002;  // objects say goodbye here
@@ -21,6 +22,7 @@ integer HEARTBEAT_CHANNEL     = -2003;  // GM pings out, objects ACK back
 integer PLACEMENT_CHANNEL     = -2004;  // placement handler sends grid requests
 integer TOWER_REPORT_CHANNEL  = -2005;  // towers report kills, state changes
 integer ENEMY_REPORT_CHANNEL  = -2006;  // enemies report position, arrival, death
+integer GM_DISCOVERY_CHANNEL  = -2007;  // allow objects to find GM
 
 
 // -----------------------------------------------------------------------------
@@ -56,9 +58,10 @@ integer CELL_OCCUPIED = 1;
 //   [4] last_seen         (integer unix timestamp from llGetUnixTime)
 integer REG_STRIDE = 5;
 
-integer REG_TYPE_TOWER   = 1;
-integer REG_TYPE_ENEMY   = 2;
-integer REG_TYPE_SPAWNER = 3;
+integer REG_TYPE_TOWER             = 1;
+integer REG_TYPE_ENEMY             = 2;
+integer REG_TYPE_SPAWNER           = 3;
+integer REG_TYPE_PLACEMENT_HANDLER = 4;
 
 
 // -----------------------------------------------------------------------------
@@ -296,10 +299,11 @@ dumpRegistry()
         integer age       = llGetUnixTime() - last_seen;
 
         string type_label;
-        if      (obj_type == REG_TYPE_TOWER)   type_label = "TOWER";
-        else if (obj_type == REG_TYPE_ENEMY)   type_label = "ENEMY";
-        else if (obj_type == REG_TYPE_SPAWNER) type_label = "SPAWNER";
-        else                                   type_label = "UNKNOWN";
+        if      (obj_type == REG_TYPE_TOWER)             type_label = "TOWER";
+        else if (obj_type == REG_TYPE_ENEMY)             type_label = "ENEMY";
+        else if (obj_type == REG_TYPE_SPAWNER)           type_label = "SPAWNER";
+        else if (obj_type == REG_TYPE_PLACEMENT_HANDLER) type_label = "PLACEMENT_HANDLER";
+        else                                             type_label = "UNKNOWN";
 
         llOwnerSay("[REG] [" + (string)i + "] " + type_label
             + " grid=(" + (string)gx + "," + (string)gy + ")"
@@ -367,9 +371,9 @@ cullStaleObjects()
 
         if (last_seen < threshold)
         {
-            integer obj_type = llList2Integer(gRegistry, idx + 1);
-            integer gx       = llList2Integer(gRegistry, idx + 2);
-            integer gy       = llList2Integer(gRegistry, idx + 3);
+            integer obj_type  = llList2Integer(gRegistry, idx + 1);
+            integer gx        = llList2Integer(gRegistry, idx + 2);
+            integer gy        = llList2Integer(gRegistry, idx + 3);
             string culled_key = llList2String(gRegistry, idx);
 
             llOwnerSay("[HB] Culling stale object: " + culled_key
@@ -393,14 +397,61 @@ cullStaleObjects()
 
 
 // =============================================================================
-// PLACEMENT HANDLER  (new in phase 2)
+// DISCOVERY
 // =============================================================================
 
+// Responds to GM_DISCOVER broadcasts so objects can find the GM's key
+// without it being hardcoded.
+handleDiscoveryMessage(key sender, string msg)
+{
+    if (msg != "GM_DISCOVER") return;
+    llRegionSayTo(sender, GM_DISCOVERY_CHANNEL, "GM_HERE|" + (string)llGetKey());
+    llOwnerSay("[GM] Discovery response sent to " + (string)sender);
+}
+
+
+// =============================================================================
+// PLACEMENT HANDLER
+// =============================================================================
+
+// Enforces one-at-a-time registration for placement handlers.
+// Returns TRUE if registration should proceed, FALSE if it should be rejected.
+integer checkPlacementHandlerSlot(key sender)
+{
+    integer i;
+    integer count = registryCount();
+    for (i = 0; i < count; i++)
+    {
+        integer idx      = i * REG_STRIDE;
+        integer obj_type = llList2Integer(gRegistry, idx + 1);
+        key existing_key = (key)llList2String(gRegistry, idx);
+        if (obj_type == REG_TYPE_PLACEMENT_HANDLER && existing_key != sender)
+        {
+            llRegionSayTo(sender, GM_REGISTER_CHANNEL,
+                "REGISTER_REJECTED|PLACEMENT_HANDLER_ALREADY_REGISTERED|"
+                + (string)existing_key);
+            llOwnerSay("[REG] Rejected duplicate placement handler: " + (string)sender);
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 // Handles PLACEMENT_REQUEST messages from the placement handler prim.
-// Phase 2 scope: log coordinates and cross-reference against map data.
-// Phase 3 will replace the body with full validation and response logic.
+// Validates the sender is a registered placement handler before processing.
 handlePlacementRequest(key sender, string msg)
 {
+    // Validate sender is a registered placement handler
+    integer sender_idx = findRegistryEntry(sender);
+    if (sender_idx == -1 ||
+        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    {
+        llOwnerSay("[PL] Rejected placement request from unregistered sender: "
+            + (string)sender);
+        llRegionSayTo(sender, PLACEMENT_CHANNEL, "PLACEMENT_REJECTED|NOT_REGISTERED");
+        return;
+    }
+
     list parts = llParseString2List(msg, ["|"], []);
     if (llGetListLength(parts) < 4)
     {
@@ -458,12 +509,20 @@ handleRegisterMessage(key sender, string msg)
         llOwnerSay("[REG] Unexpected command on register channel: " + cmd);
         return;
     }
-    if (obj_type < REG_TYPE_TOWER || obj_type > REG_TYPE_SPAWNER)
+    if (obj_type < REG_TYPE_TOWER || obj_type > REG_TYPE_PLACEMENT_HANDLER)
     {
         llOwnerSay("[REG] Unknown object type " + (string)obj_type + " from " + (string)sender);
         return;
     }
+
+    if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+    {
+        if (!checkPlacementHandlerSlot(sender))
+            return;
+    }
+
     registerObject(sender, obj_type, gx, gy);
+    llRegionSayTo(sender, GM_REGISTER_CHANNEL, "REGISTER_OK|" + (string)obj_type);
 }
 
 // Parses a deregistration message of the form:
@@ -546,17 +605,14 @@ default
     {
         llOwnerSay("[GM] Starting up...");
 
-        // Initialize the map grid
         initMap();
 
         // Open listeners
         llListen(GM_REGISTER_CHANNEL,   "", NULL_KEY, "");
         llListen(GM_DEREGISTER_CHANNEL, "", NULL_KEY, "");
         llListen(HEARTBEAT_CHANNEL,     "", NULL_KEY, "");
-
-        // Listen on channel 0 for debug commands from owner only
-        // (filtered by avatar check inside handleDebugCommand)
-        llListen(PLACEMENT_CHANNEL,     "", NULL_KEY, "");  // new in phase 2
+        llListen(PLACEMENT_CHANNEL,     "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL,  "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
 
         // Start heartbeat timer
@@ -584,6 +640,10 @@ default
         else if (channel == PLACEMENT_CHANNEL)
         {
             handlePlacementRequest(id, msg);
+        }
+        else if (channel == GM_DISCOVERY_CHANNEL)
+        {
+            handleDiscoveryMessage(id, msg);
         }
         else if (channel == 0 && id == llGetOwner())
         {

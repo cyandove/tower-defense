@@ -1,10 +1,16 @@
 // =============================================================================
 // placement_handler.lsl
-// Tower Defense Placement Handler — Phase 2
-//
-// Drop this script into a flat transparent prim that covers the playfield.
-// When an avatar clicks the prim, it translates the touch position into
-// grid coordinates and forwards a PLACEMENT_REQUEST to the Game Manager.
+// Tower Defense Placement Handler — Phase 2b
+// Adds: GM discovery flow, registration with enforcement
+// =============================================================================
+// PHASE 2b CHANGES:
+//   - Broadcasts GM_DISCOVER on startup to find GM key automatically
+//   - Retries discovery every DISCOVERY_RETRY_INTERVAL seconds until found
+//   - Registers as REG_TYPE_PLACEMENT_HANDLER after GM key is confirmed
+//   - Handles REGISTER_OK and REGISTER_REJECTED responses
+//   - Blocks placement requests until registered successfully
+//   - Responds to heartbeat PINGs from the GM
+// =============================================================================
 //
 // SETUP INSTRUCTIONS:
 //   1. Create a flat box prim sized to cover your entire grid in meters.
@@ -26,12 +32,16 @@
 // CHANNEL CONSTANTS
 // Must match game_manager.lsl exactly.
 // -----------------------------------------------------------------------------
-integer PLACEMENT_CHANNEL = -2004;
+integer GM_REGISTER_CHANNEL   = -2001;
+integer GM_DEREGISTER_CHANNEL = -2002;
+integer HEARTBEAT_CHANNEL     = -2003;
+integer PLACEMENT_CHANNEL     = -2004;
+integer GM_DISCOVERY_CHANNEL  = -2007;
 
 
 // -----------------------------------------------------------------------------
 // GRID CONFIGURATION
-// Only MAP_WIDTH, MAP_HEIGHT, TOP_FACE, and GM_KEY need to be set manually.
+// Only MAP_WIDTH, MAP_HEIGHT, and TOP_FACE need to be set manually.
 // Cell size and grid origin are derived from the prim's scale and position.
 // -----------------------------------------------------------------------------
 
@@ -44,17 +54,21 @@ integer MAP_HEIGHT = 10;
 // each face with a test script that prints llDetectedTouchFace(0).
 integer TOP_FACE = 1;
 
-// Key of the Game Manager prim. Set this after rezzing the GM.
-// You can find it by touching the GM prim and printing llDetectedKey(0),
-// or by reading it from the GM's llOwnerSay output at startup.
-key GM_KEY = NULL_KEY;
+// How often to retry GM discovery if no response is received, in seconds.
+integer DISCOVERY_RETRY_INTERVAL = 5;
+
+integer REG_TYPE_PLACEMENT_HANDLER = 4;
+
 
 // -----------------------------------------------------------------------------
 // DERIVED GLOBALS — calculated at startup from prim scale and position.
 // Do not edit these directly.
 // -----------------------------------------------------------------------------
-vector gGridOrigin;  // region-space XY of the grid's (0,0) corner
-float  gCellSize;    // meters per cell, derived from prim scale / MAP_WIDTH
+vector  gGridOrigin;           // region-space XY of the grid's (0,0) corner
+float   gCellSize;             // meters per cell, derived from prim scale / MAP_WIDTH
+key     gGM_KEY     = NULL_KEY;  // set automatically via discovery
+integer gRegistered = FALSE;   // TRUE once GM has acknowledged registration
+integer gDiscovering = FALSE;  // TRUE while waiting for GM_HERE response
 
 // Calculates gGridOrigin and gCellSize from the prim's current position and
 // scale. Call this in state_entry() and whenever the prim is moved or resized.
@@ -68,6 +82,65 @@ initGridFromPrim()
                    pos.y - size.y * 0.5,
                    pos.z>;
     gCellSize = size.x / MAP_WIDTH;
+}
+
+
+// -----------------------------------------------------------------------------
+// GM DISCOVERY AND REGISTRATION
+// -----------------------------------------------------------------------------
+
+// Broadcasts a discovery request. The GM will respond with GM_HERE|<key>.
+discoverGM()
+{
+    gDiscovering = TRUE;
+    llSay(GM_DISCOVERY_CHANNEL, "GM_DISCOVER");
+    llOwnerSay("[PH] Broadcasting GM_DISCOVER...");
+}
+
+// Called when GM_HERE is received. Stores the GM key and sends registration.
+handleGMHere(key gm_key)
+{
+    gGM_KEY      = gm_key;
+    gDiscovering = FALSE;
+    llOwnerSay("[PH] Found GM: " + (string)gGM_KEY);
+
+    // Register as a placement handler. Grid position 0,0 is a placeholder
+    // since placement handlers aren't tied to a specific cell.
+    llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
+        "REGISTER|" + (string)REG_TYPE_PLACEMENT_HANDLER + "|0|0");
+}
+
+// Called when the GM responds to our registration attempt.
+handleRegisterResponse(string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+    if (cmd == "REGISTER_OK")
+    {
+        gRegistered = TRUE;
+        llSetTimerEvent(0);  // stop retry timer
+        llOwnerSay("[PH] Registered with GM successfully.");
+    }
+    else if (cmd == "REGISTER_REJECTED")
+    {
+        gRegistered = FALSE;
+        string reason = llList2String(parts, 1);
+        llOwnerSay("[PH] Registration rejected by GM: " + reason);
+        // Don't retry — a duplicate handler is a configuration error,
+        // not a timing issue. Operator intervention required.
+        llSetTimerEvent(0);
+    }
+}
+
+// Responds to heartbeat PINGs from the GM.
+handleHeartbeat(string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llList2String(parts, 0) == "PING")
+    {
+        string seq = llList2String(parts, 1);
+        llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL, "ACK|" + seq);
+    }
 }
 
 
@@ -120,24 +193,18 @@ string gridStr(vector g)
 // Format: PLACEMENT_REQUEST|<grid_x>|<grid_y>|<avatar_key>
 sendPlacementRequest(integer grid_x, integer grid_y, key avatar)
 {
+    if (!gRegistered)
+    {
+        llOwnerSay("[PH] Not yet registered with GM — placement request dropped.");
+        return;
+    }
+
     string msg = "PLACEMENT_REQUEST"
         + "|" + (string)grid_x
         + "|" + (string)grid_y
         + "|" + (string)avatar;
 
-    if (GM_KEY == NULL_KEY)
-    {
-        // GM key not configured — broadcast on channel as fallback.
-        // This is acceptable during testing but should be replaced with
-        // a direct llRegionSayTo once the GM key is known.
-        llSay(PLACEMENT_CHANNEL, msg);
-        llOwnerSay("[PH] Warning: GM_KEY not set, broadcasting on channel "
-            + (string)PLACEMENT_CHANNEL);
-    }
-    else
-    {
-        llRegionSayTo(GM_KEY, PLACEMENT_CHANNEL, msg);
-    }
+    llRegionSayTo(gGM_KEY, PLACEMENT_CHANNEL, msg);
 }
 
 
@@ -151,6 +218,10 @@ default
     {
         initGridFromPrim();
 
+        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
+        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
+        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
+
         llOwnerSay("[PH] Placement handler ready.");
         llOwnerSay("[PH] Prim position: " + (string)llGetPos());
         llOwnerSay("[PH] Prim scale:    " + (string)llGetScale());
@@ -159,10 +230,27 @@ default
         llOwnerSay("[PH] Grid:          " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
             + " (" + (string)((integer)(gCellSize * MAP_WIDTH)) + "x"
             + (string)((integer)(gCellSize * MAP_HEIGHT)) + "m total)");
-        llOwnerSay("[PH] GM key: " + (string)GM_KEY);
 
-        if (GM_KEY == NULL_KEY)
-            llOwnerSay("[PH] Warning: GM_KEY is NULL_KEY. Set it before production use.");
+        discoverGM();
+        llSetTimerEvent(DISCOVERY_RETRY_INTERVAL);
+    }
+
+    listen(integer channel, string name, key id, string msg)
+    {
+        if (channel == GM_DISCOVERY_CHANNEL)
+        {
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llList2String(parts, 0) == "GM_HERE" && gGM_KEY == NULL_KEY)
+                handleGMHere((key)llList2String(parts, 1));
+        }
+        else if (channel == GM_REGISTER_CHANNEL && id == gGM_KEY)
+        {
+            handleRegisterResponse(msg);
+        }
+        else if (channel == HEARTBEAT_CHANNEL && id == gGM_KEY)
+        {
+            handleHeartbeat(msg);
+        }
     }
 
     touch_start(integer num_detected)
@@ -196,6 +284,16 @@ default
             + " -> grid " + gridStr(grid));
 
         sendPlacementRequest(grid_x, grid_y, avatar);
+    }
+
+    timer()
+    {
+        // Still discovering — retry broadcast
+        if (!gRegistered && gDiscovering)
+            discoverGM();
+        // GM found but registration not yet acknowledged — resend
+        else if (gGM_KEY != NULL_KEY && !gRegistered)
+            handleGMHere(gGM_KEY);
     }
 
     on_rez(integer start_param)
