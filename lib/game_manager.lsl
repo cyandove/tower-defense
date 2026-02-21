@@ -612,7 +612,7 @@ handleHeartbeatMessage(key sender, string msg)
 handleSetCommand(string msg)
 {
     list parts = llParseString2List(msg, [" "], []);
-    if (llGetListLength(parts) < 4)
+    if (llGetListLength(parts) < 5)
     {
         llOwnerSay("[GM] Usage: /td set <x> <y> <build|path|blocked>");
         return;
@@ -651,8 +651,12 @@ handleSetCommand(string msg)
     }
 
     setCell(x, y, new_type, new_occupied);
-    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str
-        + (new_occupied == CELL_OCCUPIED ? " [occupied]" : " [empty]"));
+    string occupied_label;
+    if (new_occupied == CELL_OCCUPIED)
+        occupied_label = " [occupied]";
+    else
+        occupied_label = " [empty]";
+    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str + occupied_label);
 }
 
 handleDebugCommand(string msg)
