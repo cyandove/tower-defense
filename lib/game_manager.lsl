@@ -1,22 +1,20 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 4c
-// Adds: automated spawner/handler pairing via HANDLER_QUERY flow
+// Tower Defense Game Manager — Phase 4c (memory optimised)
 // =============================================================================
-// PHASE 4c CHANGES:
-//   - Spawner registration no longer requires a handler key in the message
-//   - Added HANDLER_QUERY handling in handleSpawnerReport():
-//       spawner sends HANDLER_QUERY, GM responds with HANDLER_INFO|<key>
-//       (or HANDLER_INFO|NULL_KEY if no handler registered yet)
-//   - Added SPAWNER_PAIRED handling: spawner confirms its paired handler key,
-//       GM stores the pairing in gSpawnerPairings
-//   - handleRegisterMessage() no longer parses 5th field for spawners
+// MEMORY FIXES:
+//   - initMap(): replaced 100-iteration += loop with 10-chunk append
+//   - dumpMap(): replaced per-character string += with list + llDumpList2String
+//   - receiveHeartbeatAck(): removed stale-ACK llOwnerSay (hot path)
+//   - registerObject() / deregisterObject(): trimmed log strings
+//   - cullStaleObjects(): removed per-cull llOwnerSay, kept summary only
+//   - handleSpawnerReport() HANDLER_QUERY: single log line
+//   - handleEnemyReport() ENEMY_POSITION: no log (fires every second per enemy)
 // =============================================================================
 
 
 // -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS
-// Copy these into every script that needs to communicate with the GM.
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL        = -2001;
 integer GM_DEREGISTER_CHANNEL      = -2002;
@@ -34,8 +32,8 @@ integer GRID_INFO_CHANNEL          = -2011;
 // -----------------------------------------------------------------------------
 // MAP CONSTANTS
 // -----------------------------------------------------------------------------
-integer MAP_WIDTH  = 10;
-integer MAP_HEIGHT = 10;
+integer MAP_WIDTH   = 10;
+integer MAP_HEIGHT  = 10;
 integer CELL_STRIDE = 3;
 
 integer CELL_BLOCKED   = 0;
@@ -58,16 +56,13 @@ integer REG_TYPE_PLACEMENT_HANDLER = 4;
 
 
 // -----------------------------------------------------------------------------
-// SPAWNER PAIRING TABLE
-// [spawner_key, handler_key, ...]
-// One handler may appear multiple times. One spawner appears at most once.
+// SPAWNER PAIRING TABLE  [spawner_key, handler_key, ...]
 // -----------------------------------------------------------------------------
 integer PAIRING_STRIDE = 2;
 
 
 // -----------------------------------------------------------------------------
-// ENEMY POSITION TABLE
-// [key, pos_x, pos_y, pos_z, last_update_timestamp, ...]
+// ENEMY POSITION TABLE  [key, pos_x, pos_y, pos_z, timestamp, ...]
 // -----------------------------------------------------------------------------
 integer EP_STRIDE = 5;
 
@@ -119,11 +114,7 @@ integer getCellOccupied(integer x, integer y)
 
 setCell(integer x, integer y, integer type, integer occupied)
 {
-    if (!inBounds(x, y))
-    {
-        llOwnerSay("[MAP] setCell out of bounds: " + (string)x + "," + (string)y);
-        return;
-    }
+    if (!inBounds(x, y)) return;
     integer idx = cellIndex(x, y);
     gMap = llListReplaceList(gMap, [type, occupied, 0], idx, idx + CELL_STRIDE - 1);
 }
@@ -142,14 +133,16 @@ integer isPlaceable(integer x, integer y)
 
 initMap()
 {
+    // Build one row of 10 cells (30 entries) then append it 10 times.
+    // Avoids 100 individual list copies from a single-entry += loop.
+    list row = [ 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0,
+                 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0 ];
     gMap = [];
-    integer total = MAP_WIDTH * MAP_HEIGHT;
     integer i;
-    for (i = 0; i < total; i++)
-    {
-        gMap += [CELL_BUILDABLE, CELL_EMPTY, 0];
-    }
+    for (i = 0; i < MAP_HEIGHT; i++)
+        gMap += row;
 
+    // Path cells
     setCell(2, 0, CELL_PATH, CELL_EMPTY);
     setCell(2, 1, CELL_PATH, CELL_EMPTY);
     setCell(2, 2, CELL_PATH, CELL_EMPTY);
@@ -171,36 +164,38 @@ initMap()
     setCell(2, 8, CELL_PATH, CELL_EMPTY);
     setCell(2, 9, CELL_PATH, CELL_EMPTY);
 
+    // Blocked cells
     setCell(0, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(1, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(9, 9, CELL_BLOCKED, CELL_EMPTY);
     setCell(8, 9, CELL_BLOCKED, CELL_EMPTY);
 
-    llOwnerSay("[MAP] Initialized " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT + " grid.");
+    llOwnerSay("[GM] Map ready. Mem: " + (string)llGetFreeMemory() + "b");
 }
 
 dumpMap()
 {
-    llOwnerSay("[MAP] --- MAP DUMP (y=0 top, y=" + (string)(MAP_HEIGHT-1) + " bottom) ---");
+    // Build each row as a list then join once with llDumpList2String.
+    // Avoids repeated string copies from row += ch in a loop.
+    llOwnerSay("[MAP] y=0 is top");
     integer y;
     for (y = 0; y < MAP_HEIGHT; y++)
     {
-        string row = "[MAP] y=" + (string)y + " | ";
+        list cells = [];
         integer x;
         for (x = 0; x < MAP_WIDTH; x++)
         {
             integer t = getCellType(x, y);
             integer o = getCellOccupied(x, y);
             string ch;
-            if      (t == CELL_PATH)      ch = "P";
-            else if (t == CELL_BLOCKED)   ch = "X";
-            else                          ch = "B";
-            if (o == CELL_OCCUPIED)       ch = llToLower(ch);
-            row += ch + " ";
+            if      (t == CELL_PATH)    ch = "P";
+            else if (t == CELL_BLOCKED) ch = "X";
+            else                        ch = "B";
+            if (o == CELL_OCCUPIED)     ch = llToLower(ch);
+            cells += [ch];
         }
-        llOwnerSay(row);
+        llOwnerSay("y" + (string)y + " " + llDumpList2String(cells, " "));
     }
-    llOwnerSay("[MAP] --- END DUMP ---");
 }
 
 
@@ -219,25 +214,17 @@ registerObject(key id, integer obj_type, integer gx, integer gy)
     if (existing != -1)
     {
         gRegistry = llListReplaceList(gRegistry,
-            [llGetUnixTime()],
-            existing + 4, existing + 4);
-        llOwnerSay("[REG] Re-registered: " + (string)id + " (type=" + (string)obj_type + ")");
+            [llGetUnixTime()], existing + 4, existing + 4);
         return;
     }
     gRegistry += [(string)id, obj_type, gx, gy, llGetUnixTime()];
-    llOwnerSay("[REG] Registered: " + (string)id
-        + " type=" + (string)obj_type
-        + " grid=(" + (string)gx + "," + (string)gy + ")");
+    llOwnerSay("[REG] +" + (string)obj_type + " " + (string)id);
 }
 
 deregisterObject(key id)
 {
     integer idx = findRegistryEntry(id);
-    if (idx == -1)
-    {
-        llOwnerSay("[REG] Deregister: unknown key " + (string)id);
-        return;
-    }
+    if (idx == -1) return;
 
     integer obj_type = llList2Integer(gRegistry, idx + 1);
     integer gx       = llList2Integer(gRegistry, idx + 2);
@@ -247,17 +234,14 @@ deregisterObject(key id)
 
     if (obj_type == REG_TYPE_TOWER)
         setCellOccupied(gx, gy, CELL_EMPTY);
-
     if (obj_type == REG_TYPE_ENEMY)
         removeEnemyPosition(id);
-
     if (obj_type == REG_TYPE_SPAWNER)
         removeSpawnerPairing(id);
-
     if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
         removePairingsForHandler(id);
 
-    llOwnerSay("[REG] Deregistered: " + (string)id);
+    llOwnerSay("[REG] -" + (string)obj_type + " " + (string)id);
 }
 
 integer registryCount()
@@ -265,16 +249,14 @@ integer registryCount()
     return llGetListLength(gRegistry) / REG_STRIDE;
 }
 
-// Returns the key of the first registered placement handler, or NULL_KEY.
 key findRegisteredHandler()
 {
     integer count = registryCount();
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx      = i * REG_STRIDE;
-        integer obj_type = llList2Integer(gRegistry, idx + 1);
-        if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+        integer idx = i * REG_STRIDE;
+        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_PLACEMENT_HANDLER)
             return (key)llList2String(gRegistry, idx);
     }
     return NULL_KEY;
@@ -283,31 +265,27 @@ key findRegisteredHandler()
 dumpRegistry()
 {
     integer count = registryCount();
-    llOwnerSay("[REG] --- REGISTRY DUMP (" + (string)count + " objects) ---");
+    llOwnerSay("[REG] --- " + (string)count + " objects ---");
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx       = i * REG_STRIDE;
-        string  id        = llList2String (gRegistry, idx);
-        integer obj_type  = llList2Integer(gRegistry, idx + 1);
-        integer gx        = llList2Integer(gRegistry, idx + 2);
-        integer gy        = llList2Integer(gRegistry, idx + 3);
-        integer last_seen = llList2Integer(gRegistry, idx + 4);
-        integer age       = llGetUnixTime() - last_seen;
+        integer idx      = i * REG_STRIDE;
+        integer obj_type = llList2Integer(gRegistry, idx + 1);
+        integer age      = llGetUnixTime() - llList2Integer(gRegistry, idx + 4);
 
         string type_label;
-        if      (obj_type == REG_TYPE_TOWER)             type_label = "TOWER";
-        else if (obj_type == REG_TYPE_ENEMY)             type_label = "ENEMY";
-        else if (obj_type == REG_TYPE_SPAWNER)           type_label = "SPAWNER";
-        else if (obj_type == REG_TYPE_PLACEMENT_HANDLER) type_label = "PLACEMENT_HANDLER";
-        else                                             type_label = "UNKNOWN";
+        if      (obj_type == REG_TYPE_TOWER)             type_label = "TWR";
+        else if (obj_type == REG_TYPE_ENEMY)             type_label = "ENM";
+        else if (obj_type == REG_TYPE_SPAWNER)           type_label = "SPN";
+        else if (obj_type == REG_TYPE_PLACEMENT_HANDLER) type_label = "PLH";
+        else                                             type_label = "UNK";
 
-        llOwnerSay("[REG] [" + (string)i + "] " + type_label
-            + " grid=(" + (string)gx + "," + (string)gy + ")"
-            + " last_seen=" + (string)age + "s ago"
-            + " key=" + id);
+        llOwnerSay("[REG] " + type_label
+            + " (" + (string)llList2Integer(gRegistry, idx + 2)
+            + "," + (string)llList2Integer(gRegistry, idx + 3) + ")"
+            + " " + (string)age + "s"
+            + " " + llList2String(gRegistry, idx));
     }
-    llOwnerSay("[REG] --- END DUMP ---");
 }
 
 
@@ -321,73 +299,57 @@ sendHeartbeat()
     integer count = registryCount();
     if (count == 0) return;
 
-    string ping_msg = "PING|" + (string)gHeartbeatSeq;
+    string ping = "PING|" + (string)gHeartbeatSeq;
     integer i;
     for (i = 0; i < count; i++)
-    {
-        key target = (key)llList2String(gRegistry, i * REG_STRIDE);
-        llRegionSayTo(target, HEARTBEAT_CHANNEL, ping_msg);
-    }
-    llOwnerSay("[HB] Sent PING #" + (string)gHeartbeatSeq
-        + " to " + (string)count + " object(s).");
+        llRegionSayTo((key)llList2String(gRegistry, i * REG_STRIDE),
+            HEARTBEAT_CHANNEL, ping);
 }
 
 receiveHeartbeatAck(key id, integer seq)
 {
-    if (seq != gHeartbeatSeq)
-    {
-        llOwnerSay("[HB] Stale ACK from " + (string)id
-            + " (seq=" + (string)seq + " expected=" + (string)gHeartbeatSeq + ")");
-        return;
-    }
+    // Silently drop stale ACKs — logging here fires on every enemy every cycle
+    if (seq != gHeartbeatSeq) return;
     integer idx = findRegistryEntry(id);
     if (idx == -1) return;
     gRegistry = llListReplaceList(gRegistry,
-        [llGetUnixTime()],
-        idx + 4, idx + 4);
+        [llGetUnixTime()], idx + 4, idx + 4);
 }
 
 cullStaleObjects()
 {
     integer threshold = llGetUnixTime() - (HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT);
     integer i = registryCount() - 1;
-    integer culled_count = 0;
+    integer culled = 0;
 
     for (; i >= 0; i--)
     {
-        integer idx       = i * REG_STRIDE;
-        integer last_seen = llList2Integer(gRegistry, idx + 4);
-
-        if (last_seen < threshold)
+        integer idx = i * REG_STRIDE;
+        if (llList2Integer(gRegistry, idx + 4) < threshold)
         {
-            integer obj_type  = llList2Integer(gRegistry, idx + 1);
-            integer gx        = llList2Integer(gRegistry, idx + 2);
-            integer gy        = llList2Integer(gRegistry, idx + 3);
-            string culled_key = llList2String(gRegistry, idx);
-
-            llOwnerSay("[HB] Culling stale object: " + culled_key
-                + " (last seen " + (string)(llGetUnixTime() - last_seen) + "s ago)");
+            integer obj_type = llList2Integer(gRegistry, idx + 1);
+            integer gx       = llList2Integer(gRegistry, idx + 2);
+            integer gy       = llList2Integer(gRegistry, idx + 3);
+            key     cid      = (key)llList2String(gRegistry, idx);
 
             gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
 
             if (obj_type == REG_TYPE_TOWER)
                 setCellOccupied(gx, gy, CELL_EMPTY);
             if (obj_type == REG_TYPE_ENEMY)
-                removeEnemyPosition((key)culled_key);
+                removeEnemyPosition(cid);
             if (obj_type == REG_TYPE_SPAWNER)
-                removeSpawnerPairing((key)culled_key);
+                removeSpawnerPairing(cid);
             if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
-                removePairingsForHandler((key)culled_key);
+                removePairingsForHandler(cid);
 
-            culled_count++;
+            culled++;
         }
     }
 
-    if (culled_count > 0)
-    {
-        llOwnerSay("[HB] Culled " + (string)culled_count + " stale object(s). "
-            + "Registry size: " + (string)registryCount());
-    }
+    if (culled > 0)
+        llOwnerSay("[HB] Culled " + (string)culled
+            + ". Registry: " + (string)registryCount());
 }
 
 
@@ -399,7 +361,6 @@ handleDiscoveryMessage(key sender, string msg)
 {
     if (msg != "GM_DISCOVER") return;
     llRegionSayTo(sender, GM_DISCOVERY_CHANNEL, "GM_HERE|" + (string)llGetKey());
-    llOwnerSay("[GM] Discovery response sent to " + (string)sender);
 }
 
 
@@ -426,11 +387,8 @@ removeSpawnerPairing(key spawner_key)
 {
     integer idx = findSpawnerPairing(spawner_key);
     if (idx != -1)
-    {
         gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
             idx, idx + PAIRING_STRIDE - 1);
-        llOwnerSay("[PAIR] Removed pairing for spawner: " + (string)spawner_key);
-    }
 }
 
 removePairingsForHandler(key handler_key)
@@ -441,13 +399,8 @@ removePairingsForHandler(key handler_key)
     {
         integer idx = i * PAIRING_STRIDE;
         if ((key)llList2String(gSpawnerPairings, idx + 1) == handler_key)
-        {
-            key spawner = (key)llList2String(gSpawnerPairings, idx);
             gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
                 idx, idx + PAIRING_STRIDE - 1);
-            llOwnerSay("[PAIR] Removed pairing for spawner " + (string)spawner
-                + " (handler removed)");
-        }
     }
 }
 
@@ -461,17 +414,14 @@ key getPairedHandler(key spawner_key)
 dumpPairings()
 {
     integer count = llGetListLength(gSpawnerPairings) / PAIRING_STRIDE;
-    llOwnerSay("[PAIR] --- PAIRING DUMP (" + (string)count + " pairs) ---");
+    llOwnerSay("[PAIR] --- " + (string)count + " pairs ---");
     integer i;
     for (i = 0; i < count; i++)
     {
         integer idx = i * PAIRING_STRIDE;
-        llOwnerSay("[PAIR] [" + (string)i + "] spawner="
-            + llList2String(gSpawnerPairings, idx)
-            + " -> handler="
-            + llList2String(gSpawnerPairings, idx + 1));
+        llOwnerSay("[PAIR] " + llList2String(gSpawnerPairings, idx)
+            + " -> " + llList2String(gSpawnerPairings, idx + 1));
     }
-    llOwnerSay("[PAIR] --- END DUMP ---");
 }
 
 
@@ -479,41 +429,26 @@ dumpPairings()
 // GRID INFO FORWARDING
 // =============================================================================
 
-// Handles GRID_INFO_REQUEST from a spawner.
-// The spawner sends its own key and the handler key it was given.
-// The GM validates the handler is registered and forwards the request.
-// Format: GRID_INFO_REQUEST|<spawner_key>|<handler_key>
 handleGridInfoRequest(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 3)
-    {
-        llOwnerSay("[GRID] Malformed GRID_INFO_REQUEST from " + (string)sender);
-        return;
-    }
+    if (llGetListLength(parts) < 3) return;
 
     key spawner_key = (key)llList2String(parts, 1);
     key handler_key = (key)llList2String(parts, 2);
 
-    if (sender != spawner_key)
-    {
-        llOwnerSay("[GRID] Sender mismatch in GRID_INFO_REQUEST: " + (string)sender);
-        return;
-    }
+    if (sender != spawner_key) return;
 
     integer handler_idx = findRegistryEntry(handler_key);
     if (handler_idx == -1 ||
         llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
     {
-        llOwnerSay("[GRID] Handler not registered: " + (string)handler_key);
         llRegionSayTo(sender, GRID_INFO_CHANNEL, "GRID_INFO_ERROR|HANDLER_NOT_REGISTERED");
         return;
     }
 
     llRegionSayTo(handler_key, GRID_INFO_CHANNEL,
         "GRID_INFO_REQUEST|" + (string)spawner_key);
-    llOwnerSay("[GRID] Forwarded grid info request: spawner=" + (string)spawner_key
-        + " handler=" + (string)handler_key);
 }
 
 
@@ -533,8 +468,7 @@ upsertEnemyPosition(key id, vector pos)
         gEnemyPositions += [(string)id, pos.x, pos.y, pos.z, llGetUnixTime()];
     else
         gEnemyPositions = llListReplaceList(gEnemyPositions,
-            [pos.x, pos.y, pos.z, llGetUnixTime()],
-            idx + 1, idx + 4);
+            [pos.x, pos.y, pos.z, llGetUnixTime()], idx + 1, idx + 4);
 }
 
 removeEnemyPosition(key id)
@@ -562,21 +496,22 @@ handleEnemyReport(key sender, string msg)
     if (cmd == "ENEMY_POSITION")
     {
         if (llGetListLength(parts) < 4) return;
-        vector pos = <(float)llList2String(parts, 1),
-                      (float)llList2String(parts, 2),
-                      (float)llList2String(parts, 3)>;
-        upsertEnemyPosition(sender, pos);
+        // No llOwnerSay here — this fires every second per enemy
+        upsertEnemyPosition(sender,
+            <(float)llList2String(parts, 1),
+             (float)llList2String(parts, 2),
+             (float)llList2String(parts, 3)>);
     }
     else if (cmd == "ENEMY_ARRIVED")
     {
         gLives--;
-        llOwnerSay("[EN] Enemy reached end. Lives: " + (string)gLives);
+        llOwnerSay("[GM] Enemy arrived. Lives: " + (string)gLives);
         removeEnemyPosition(sender);
         deregisterObject(sender);
     }
     else
     {
-        llOwnerSay("[EN] Unknown enemy report: " + cmd);
+        llOwnerSay("[EN] Unknown: " + cmd);
     }
 }
 
@@ -585,17 +520,6 @@ handleEnemyReport(key sender, string msg)
 // SPAWNER HANDLER
 // =============================================================================
 
-// Handles messages from spawners on SPAWNER_CHANNEL.
-//
-// SPAWNER_READY
-//   Spawner has registered and is announcing readiness.
-//
-// HANDLER_QUERY
-//   Spawner is asking the GM for the key of the registered placement handler.
-//   GM responds with HANDLER_INFO|<key> — NULL_KEY if none registered yet.
-//
-// SPAWNER_PAIRED|<handler_key>
-//   Spawner confirms which handler it paired with. GM stores the association.
 handleSpawnerReport(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -603,46 +527,29 @@ handleSpawnerReport(key sender, string msg)
 
     if (cmd == "SPAWNER_READY")
     {
-        llOwnerSay("[SP] Spawner ready: " + (string)sender);
+        llOwnerSay("[SP] Ready: " + (string)sender);
     }
     else if (cmd == "HANDLER_QUERY")
     {
         key handler_key = findRegisteredHandler();
-        llRegionSayTo(sender, SPAWNER_CHANNEL,
-            "HANDLER_INFO|" + (string)handler_key);
-        if (handler_key == NULL_KEY)
-            llOwnerSay("[SP] HANDLER_QUERY from " + (string)sender
-                + " — no handler registered yet.");
-        else
-            llOwnerSay("[SP] HANDLER_QUERY from " + (string)sender
-                + " — replied with " + (string)handler_key);
+        llRegionSayTo(sender, SPAWNER_CHANNEL, "HANDLER_INFO|" + (string)handler_key);
+        llOwnerSay("[SP] HANDLER_QUERY -> " + (string)handler_key);
     }
     else if (cmd == "SPAWNER_PAIRED")
     {
-        if (llGetListLength(parts) < 2)
-        {
-            llOwnerSay("[SP] Malformed SPAWNER_PAIRED from " + (string)sender);
-            return;
-        }
+        if (llGetListLength(parts) < 2) return;
         key handler_key = (key)llList2String(parts, 1);
 
-        // Validate handler is still registered before storing pairing
         integer handler_idx = findRegistryEntry(handler_key);
         if (handler_idx == -1 ||
             llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
         {
-            llOwnerSay("[PAIR] Rejected SPAWNER_PAIRED — handler not registered: "
-                + (string)handler_key);
+            llOwnerSay("[PAIR] Rejected: " + (string)handler_key);
             return;
         }
 
         setSpawnerPairing(sender, handler_key);
-        llOwnerSay("[PAIR] Spawner " + (string)sender
-            + " paired with handler " + (string)handler_key);
-    }
-    else
-    {
-        llOwnerSay("[SP] Unknown spawner message: " + cmd);
+        llOwnerSay("[PAIR] " + (string)sender + " -> " + (string)handler_key);
     }
 }
 
@@ -653,21 +560,20 @@ startWave()
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx      = i * REG_STRIDE;
-        integer obj_type = llList2Integer(gRegistry, idx + 1);
-        if (obj_type == REG_TYPE_SPAWNER)
+        integer idx = i * REG_STRIDE;
+        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_SPAWNER)
         {
-            key target = (key)llList2String(gRegistry, idx);
-            llRegionSayTo(target, SPAWNER_CHANNEL, "WAVE_START|1");
+            llRegionSayTo((key)llList2String(gRegistry, idx),
+                SPAWNER_CHANNEL, "WAVE_START|1");
             sent++;
         }
     }
     if (sent == 0)
-        llOwnerSay("[GM] /td wave start: no spawners registered.");
+        llOwnerSay("[GM] No spawners registered.");
     else
     {
         gWaveActive = TRUE;
-        llOwnerSay("[GM] Wave started. Sent WAVE_START to " + (string)sent + " spawner(s).");
+        llOwnerSay("[GM] Wave -> " + (string)sent + " spawner(s).");
     }
 }
 
@@ -679,25 +585,17 @@ startWave()
 approvePlacement(key handler, integer gx, integer gy, key avatar)
 {
     setCellOccupied(gx, gy, CELL_OCCUPIED);
-    string response = "PLACEMENT_OK"
-        + "|" + (string)gx
-        + "|" + (string)gy
-        + "|" + (string)avatar;
-    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL, response);
-    llOwnerSay("[PL] Approved: grid (" + (string)gx + "," + (string)gy
-        + ") for " + llKey2Name(avatar));
+    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL,
+        "PLACEMENT_OK|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
+    llOwnerSay("[PL] OK (" + (string)gx + "," + (string)gy + ")");
 }
 
 denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
 {
-    string response = "PLACEMENT_DENIED"
-        + "|" + (string)gx
-        + "|" + (string)gy
-        + "|" + (string)avatar
-        + "|" + reason;
-    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL, response);
-    llOwnerSay("[PL] Denied (" + reason + "): grid ("
-        + (string)gx + "," + (string)gy + ") for " + llKey2Name(avatar));
+    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL,
+        "PLACEMENT_DENIED|" + (string)gx + "|" + (string)gy
+        + "|" + (string)avatar + "|" + reason);
+    llOwnerSay("[PL] Denied " + reason + " (" + (string)gx + "," + (string)gy + ")");
 }
 
 handlePlacementRequest(key sender, string msg)
@@ -708,7 +606,6 @@ handlePlacementRequest(key sender, string msg)
         if (sender_idx == -1 ||
             llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
         {
-            llOwnerSay("[PL] Rejected request from unregistered sender: " + (string)sender);
             llRegionSayTo(sender, PLACEMENT_RESPONSE_CHANNEL,
                 "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
             return;
@@ -717,12 +614,11 @@ handlePlacementRequest(key sender, string msg)
 
     list parts = llParseString2List(msg, ["|"], []);
     if (llGetListLength(parts) < 4) return;
-    string cmd = llList2String(parts, 0);
+    if (llList2String(parts, 0) != "PLACEMENT_REQUEST") return;
+
     integer gx = (integer)llList2String(parts, 1);
     integer gy = (integer)llList2String(parts, 2);
     key avatar = (key)llList2String(parts, 3);
-
-    if (cmd != "PLACEMENT_REQUEST") return;
 
     if (!inBounds(gx, gy))
     {
@@ -750,19 +646,18 @@ handlePlacementRequest(key sender, string msg)
 
 integer checkPlacementHandlerSlot(key sender)
 {
-    integer i;
     integer count = registryCount();
+    integer i;
     for (i = 0; i < count; i++)
     {
         integer idx      = i * REG_STRIDE;
-        integer obj_type = llList2Integer(gRegistry, idx + 1);
         key existing_key = (key)llList2String(gRegistry, idx);
-        if (obj_type == REG_TYPE_PLACEMENT_HANDLER && existing_key != sender)
+        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_PLACEMENT_HANDLER
+            && existing_key != sender)
         {
             llRegionSayTo(sender, GM_REGISTER_CHANNEL,
                 "REGISTER_REJECTED|PLACEMENT_HANDLER_ALREADY_REGISTERED|"
                 + (string)existing_key);
-            llOwnerSay("[REG] Rejected duplicate placement handler: " + (string)sender);
             return FALSE;
         }
     }
@@ -772,24 +667,16 @@ integer checkPlacementHandlerSlot(key sender)
 handleRegisterMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 4)
-    {
-        llOwnerSay("[REG] Malformed register message from " + (string)sender + ": " + msg);
-        return;
-    }
-    string cmd       = llList2String(parts, 0);
+    if (llGetListLength(parts) < 4) return;
+    if (llList2String(parts, 0) != "REGISTER") return;
+
     integer obj_type = (integer)llList2String(parts, 1);
     integer gx       = (integer)llList2String(parts, 2);
     integer gy       = (integer)llList2String(parts, 3);
 
-    if (cmd != "REGISTER")
-    {
-        llOwnerSay("[REG] Unexpected command on register channel: " + cmd);
-        return;
-    }
     if (obj_type < REG_TYPE_TOWER || obj_type > REG_TYPE_PLACEMENT_HANDLER)
     {
-        llOwnerSay("[REG] Unknown object type " + (string)obj_type + " from " + (string)sender);
+        llOwnerSay("[REG] Unknown type " + (string)obj_type);
         return;
     }
 
@@ -798,9 +685,6 @@ handleRegisterMessage(key sender, string msg)
         if (!checkPlacementHandlerSlot(sender))
             return;
     }
-
-    // Spawners no longer need a handler key at registration time —
-    // pairing is negotiated separately via HANDLER_QUERY / SPAWNER_PAIRED
 
     registerObject(sender, obj_type, gx, gy);
     llRegionSayTo(sender, GM_REGISTER_CHANNEL, "REGISTER_OK|" + (string)obj_type);
@@ -816,8 +700,7 @@ handleDeregisterMessage(key sender, string msg)
 handleHeartbeatMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    string cmd = llList2String(parts, 0);
-    if (cmd == "ACK" && llGetListLength(parts) >= 2)
+    if (llList2String(parts, 0) == "ACK" && llGetListLength(parts) >= 2)
         receiveHeartbeatAck(sender, (integer)llList2String(parts, 1));
 }
 
@@ -840,7 +723,7 @@ handleSetCommand(string msg)
 
     if (!inBounds(x, y))
     {
-        llOwnerSay("[GM] /td set: out of bounds (" + (string)x + "," + (string)y + ")");
+        llOwnerSay("[GM] Out of bounds");
         return;
     }
 
@@ -863,15 +746,12 @@ handleSetCommand(string msg)
     }
     else
     {
-        llOwnerSay("[GM] /td set: unknown type '" + type_str + "'");
+        llOwnerSay("[GM] Unknown type: " + type_str);
         return;
     }
 
     setCell(x, y, new_type, new_occupied);
-    string occ;
-    if (new_occupied == CELL_OCCUPIED) occ = " [occupied]";
-    else                               occ = " [empty]";
-    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str + occ);
+    llOwnerSay("[MAP] (" + (string)x + "," + (string)y + ") = " + type_str);
 }
 
 handleDebugCommand(string msg)
@@ -890,13 +770,13 @@ handleDebugCommand(string msg)
     }
     else if (msg == "/td stats")
     {
-        llOwnerSay("[GM] Objects: " + (string)registryCount()
-            + " | Enemies: " + (string)enemyCount()
-            + " | Pairings: " + (string)(llGetListLength(gSpawnerPairings) / PAIRING_STRIDE)
-            + " | Lives: " + (string)gLives
-            + " | Wave: " + (string)gWaveActive
-            + " | HB seq: " + (string)gHeartbeatSeq
-            + " | Mem: " + (string)llGetFreeMemory() + " bytes");
+        llOwnerSay("[GM] Objs:" + (string)registryCount()
+            + " Enemies:" + (string)enemyCount()
+            + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / PAIRING_STRIDE)
+            + " Lives:" + (string)gLives
+            + " Wave:" + (string)gWaveActive
+            + " HB:" + (string)gHeartbeatSeq
+            + " Mem:" + (string)llGetFreeMemory() + "b");
     }
     else if (llGetSubString(msg, 0, 7) == "/td set ")
         handleSetCommand(msg);
@@ -908,29 +788,19 @@ handleDebugCommand(string msg)
         integer cy = MAP_HEIGHT / 2;
         key fake_avatar = llGetOwner();
 
-        llOwnerSay("[PL] --- PLACEMENT TEST SEQUENCE ---");
-
-        llOwnerSay("[PL] Test 1: valid cell (" + (string)cx + "," + (string)cy + ")");
+        llOwnerSay("[PL] --- TEST ---");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
-
-        llOwnerSay("[PL] Test 2: same cell (expect CELL_OCCUPIED)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
-
-        llOwnerSay("[PL] Test 3: path cell 2,0 (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
-
-        llOwnerSay("[PL] Test 4: blocked cell 0,0 (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
-
         setCellOccupied(cx, cy, CELL_EMPTY);
-        llOwnerSay("[PL] Restored (" + (string)cx + "," + (string)cy + ") to empty.");
-        llOwnerSay("[PL] --- END TEST SEQUENCE ---");
+        llOwnerSay("[PL] --- DONE ---");
     }
 }
 
@@ -944,7 +814,6 @@ default
     state_entry()
     {
         llOwnerSay("[GM] Starting up...");
-
         initMap();
 
         llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
@@ -960,28 +829,20 @@ default
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
-        llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
-        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump pairings | /td dump all | /td stats | /td wave start | /td test placement | /td set <x> <y> <build|path|blocked>");
+        llOwnerSay("[GM] Mem: " + (string)llGetFreeMemory() + "b");
+        llOwnerSay("[GM] /td: dump map|registry|pairings|all|stats|wave start|test placement|set <x> <y> <type>");
     }
 
     listen(integer channel, string name, key id, string msg)
     {
-        if (channel == GM_REGISTER_CHANNEL)
-            handleRegisterMessage(id, msg);
-        else if (channel == GM_DEREGISTER_CHANNEL)
-            handleDeregisterMessage(id, msg);
-        else if (channel == HEARTBEAT_CHANNEL)
-            handleHeartbeatMessage(id, msg);
-        else if (channel == PLACEMENT_CHANNEL)
-            handlePlacementRequest(id, msg);
-        else if (channel == GM_DISCOVERY_CHANNEL)
-            handleDiscoveryMessage(id, msg);
-        else if (channel == ENEMY_REPORT_CHANNEL)
-            handleEnemyReport(id, msg);
-        else if (channel == SPAWNER_CHANNEL)
-            handleSpawnerReport(id, msg);
-        else if (channel == GRID_INFO_CHANNEL)
-            handleGridInfoRequest(id, msg);
+        if      (channel == GM_REGISTER_CHANNEL)   handleRegisterMessage(id, msg);
+        else if (channel == GM_DEREGISTER_CHANNEL) handleDeregisterMessage(id, msg);
+        else if (channel == HEARTBEAT_CHANNEL)     handleHeartbeatMessage(id, msg);
+        else if (channel == PLACEMENT_CHANNEL)     handlePlacementRequest(id, msg);
+        else if (channel == GM_DISCOVERY_CHANNEL)  handleDiscoveryMessage(id, msg);
+        else if (channel == ENEMY_REPORT_CHANNEL)  handleEnemyReport(id, msg);
+        else if (channel == SPAWNER_CHANNEL)       handleSpawnerReport(id, msg);
+        else if (channel == GRID_INFO_CHANNEL)     handleGridInfoRequest(id, msg);
         else if (channel == 0 && id == llGetOwner())
         {
             if (llGetSubString(msg, 0, 2) == "/td")
