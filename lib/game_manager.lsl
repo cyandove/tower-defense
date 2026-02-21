@@ -455,14 +455,17 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
 handlePlacementRequest(key sender, string msg)
 {
     // Step 1: verify sender is a registered placement handler
-    integer sender_idx = findRegistryEntry(sender);
-    if (sender_idx == -1 ||
-        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    if (sender != llGetKey())
     {
-        llOwnerSay("[PL] Rejected request from unregistered sender: " + (string)sender);
-        llRegionSayTo(sender, PLACEMENT_RESPONSE_CHANNEL,
-            "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
-        return;
+        integer sender_idx = findRegistryEntry(sender);
+        if (sender_idx == -1 ||
+            llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+        {
+            llOwnerSay("[PL] Rejected request from unregistered sender: " + (string)sender);
+            llRegionSayTo(sender, PLACEMENT_RESPONSE_CHANNEL,
+                "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
+            return;
+        }
     }
 
     // Step 2: parse message
