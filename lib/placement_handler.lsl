@@ -8,12 +8,15 @@
 //
 // SETUP INSTRUCTIONS:
 //   1. Create a flat box prim sized to cover your entire grid in meters.
-//      Example: if cell_size=2.0 and grid is 10x10, prim should be 20x20m.
-//   2. Position the prim so its corner aligns with your grid's (0,0) origin.
+//      Example: if MAP_WIDTH=10 and MAP_HEIGHT=10, make the prim 20x20m for
+//      2m cells, or 10x10m for 1m cells. The script derives cell size from
+//      the prim's scale automatically — just keep the prim square.
+//   2. Center the prim over your playfield. Grid origin and cell size are
+//      calculated from the prim's position and scale at startup — no manual
+//      coordinate entry needed. Move the prim and reset the script to update.
 //   3. Set the prim transparent (alpha=0) but leave it phantom OFF so
-//      clicks register. Alternatively, set alpha to ~5% so you can see it
-//      during testing and turn it fully transparent later.
-//   4. Edit CELL_SIZE, GRID_ORIGIN, and TOP_FACE below to match your build.
+//      clicks register. Alternatively set alpha to ~5% during testing.
+//   4. Edit MAP_WIDTH, MAP_HEIGHT, and TOP_FACE below if needed.
 //   5. The prim must be axis-aligned (no rotation) for the default math.
 //      If you need rotation support, see the note in translateToGrid().
 // =============================================================================
@@ -28,21 +31,13 @@ integer PLACEMENT_CHANNEL = -2004;
 
 // -----------------------------------------------------------------------------
 // GRID CONFIGURATION
-// Edit these values to match your in-world build.
+// Only MAP_WIDTH, MAP_HEIGHT, TOP_FACE, and GM_KEY need to be set manually.
+// Cell size and grid origin are derived from the prim's scale and position.
 // -----------------------------------------------------------------------------
-
-// Size of each grid cell in meters.
-float CELL_SIZE = 2.0;
 
 // Number of grid columns and rows. Must match game_manager.lsl.
 integer MAP_WIDTH  = 10;
 integer MAP_HEIGHT = 10;
-
-// The region-space XY position of the grid's (0,0) corner — the corner that
-// corresponds to the minimum X and minimum Y of your playfield.
-// Measure this in-world with a prim or the coordinates display.
-// Z is ignored for grid translation but set it to your ground level.
-vector GRID_ORIGIN = <128.0, 128.0, 22.0>;
 
 // The face index of the top face on the overlay prim.
 // On a default unmodified cube this is face 1. Verify in-world by touching
@@ -53,6 +48,27 @@ integer TOP_FACE = 1;
 // You can find it by touching the GM prim and printing llDetectedKey(0),
 // or by reading it from the GM's llOwnerSay output at startup.
 key GM_KEY = NULL_KEY;
+
+// -----------------------------------------------------------------------------
+// DERIVED GLOBALS — calculated at startup from prim scale and position.
+// Do not edit these directly.
+// -----------------------------------------------------------------------------
+vector gGridOrigin;  // region-space XY of the grid's (0,0) corner
+float  gCellSize;    // meters per cell, derived from prim scale / MAP_WIDTH
+
+// Calculates gGridOrigin and gCellSize from the prim's current position and
+// scale. Call this in state_entry() and whenever the prim is moved or resized.
+// Assumes the prim is square — if it isn't, X and Y cell sizes will differ
+// and you should store them separately.
+initGridFromPrim()
+{
+    vector pos  = llGetPos();
+    vector size = llGetScale();
+    gGridOrigin = <pos.x - size.x * 0.5,
+                   pos.y - size.y * 0.5,
+                   pos.z>;
+    gCellSize = size.x / MAP_WIDTH;
+}
 
 
 // -----------------------------------------------------------------------------
@@ -67,17 +83,17 @@ key GM_KEY = NULL_KEY;
 // is axis-aligned with the region. If your playfield is rotated, you need to
 // counter-rotate local_pos by the prim's inverse rotation before the floor()
 // math. That would look like:
-//   vector local_pos = (touch_pos - GRID_ORIGIN) / llGetRot();
+//   vector local_pos = (touch_pos - gGridOrigin) / llGetRot();
 // For now, keep your build axis-aligned to avoid this complexity.
 vector translateToGrid(vector touch_pos)
 {
     // Get position relative to grid origin
-    float local_x = touch_pos.x - GRID_ORIGIN.x;
-    float local_y = touch_pos.y - GRID_ORIGIN.y;
+    float local_x = touch_pos.x - gGridOrigin.x;
+    float local_y = touch_pos.y - gGridOrigin.y;
 
     // Convert to grid coordinates by dividing by cell size and flooring
-    integer grid_x = (integer)(local_x / CELL_SIZE);
-    integer grid_y = (integer)(local_y / CELL_SIZE);
+    integer grid_x = (integer)(local_x / gCellSize);
+    integer grid_y = (integer)(local_y / gCellSize);
 
     // Validate bounds
     if (grid_x < 0 || grid_x >= MAP_WIDTH ||
@@ -133,11 +149,16 @@ default
 {
     state_entry()
     {
+        initGridFromPrim();
+
         llOwnerSay("[PH] Placement handler ready.");
-        llOwnerSay("[PH] Grid: " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
-            + " cells at " + (string)CELL_SIZE + "m each.");
-        llOwnerSay("[PH] Grid origin: " + (string)GRID_ORIGIN);
         llOwnerSay("[PH] Prim position: " + (string)llGetPos());
+        llOwnerSay("[PH] Prim scale:    " + (string)llGetScale());
+        llOwnerSay("[PH] Grid origin:   " + (string)gGridOrigin);
+        llOwnerSay("[PH] Cell size:     " + (string)gCellSize + "m");
+        llOwnerSay("[PH] Grid:          " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
+            + " (" + (string)((integer)(gCellSize * MAP_WIDTH)) + "x"
+            + (string)((integer)(gCellSize * MAP_HEIGHT)) + "m total)");
         llOwnerSay("[PH] GM key: " + (string)GM_KEY);
 
         if (GM_KEY == NULL_KEY)
