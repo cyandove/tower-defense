@@ -51,7 +51,7 @@ integer MAP_HEIGHT = 10;
 // The face index of the top face on the overlay prim.
 // On a default unmodified cube this is face 1. Verify in-world by touching
 // each face with a test script that prints llDetectedTouchFace(0).
-integer TOP_FACE = 1;
+integer TOP_FACE = 0;
 
 // How often to retry GM discovery if no response is received, in seconds.
 integer DISCOVERY_RETRY_INTERVAL = 5;
