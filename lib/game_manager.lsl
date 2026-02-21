@@ -1,14 +1,12 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 1
-// Handles: map data structure, object registration, heartbeat/culling
+// Tower Defense Game Manager — Phase 2
+// Adds: placement request listener and coordinate verification logging
 // =============================================================================
-// PHASE 1 SCOPE:
-//   - Map grid initialization and helper functions
-//   - Object registration and deregistration
-//   - Periodic heartbeat with stale object culling
-//   - Debug map dump utility
-//   - Channel constants shared across all game scripts
+// PHASE 2 CHANGES:
+//   - Added llListen on PLACEMENT_CHANNEL
+//   - Added handlePlacementRequest() for coordinate verification logging
+//   - Added /td test placement debug command
 // =============================================================================
 
 
@@ -260,7 +258,18 @@ deregisterObject(key id)
         llOwnerSay("[REG] Deregister: unknown key " + (string)id);
         return;
     }
+
+    integer obj_type = llList2Integer(gRegistry, idx + 1);
+    integer gx       = llList2Integer(gRegistry, idx + 2);
+    integer gy       = llList2Integer(gRegistry, idx + 3);
+
     gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
+
+    // Free map cell if this was a tower (phase 3 will own this fully,
+    // but we keep it here so deregistration stays consistent)
+    if (obj_type == REG_TYPE_TOWER)
+        setCellOccupied(gx, gy, CELL_EMPTY);
+
     llOwnerSay("[REG] Deregistered: " + (string)id);
 }
 
@@ -278,7 +287,7 @@ dumpRegistry()
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx = i * REG_STRIDE;
+        integer idx       = i * REG_STRIDE;
         string  id        = llList2String (gRegistry, idx);
         integer obj_type  = llList2Integer(gRegistry, idx + 1);
         integer gx        = llList2Integer(gRegistry, idx + 2);
@@ -358,10 +367,19 @@ cullStaleObjects()
 
         if (last_seen < threshold)
         {
+            integer obj_type = llList2Integer(gRegistry, idx + 1);
+            integer gx       = llList2Integer(gRegistry, idx + 2);
+            integer gy       = llList2Integer(gRegistry, idx + 3);
             string culled_key = llList2String(gRegistry, idx);
+
             llOwnerSay("[HB] Culling stale object: " + culled_key
                 + " (last seen " + (string)(llGetUnixTime() - last_seen) + "s ago)");
+
             gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
+
+            if (obj_type == REG_TYPE_TOWER)
+                setCellOccupied(gx, gy, CELL_EMPTY);
+
             culled_count++;
         }
     }
@@ -371,6 +389,47 @@ cullStaleObjects()
         llOwnerSay("[HB] Culled " + (string)culled_count + " stale object(s). "
             + "Registry size: " + (string)registryCount());
     }
+}
+
+
+// =============================================================================
+// PLACEMENT HANDLER  (new in phase 2)
+// =============================================================================
+
+// Handles PLACEMENT_REQUEST messages from the placement handler prim.
+// Phase 2 scope: log coordinates and cross-reference against map data.
+// Phase 3 will replace the body with full validation and response logic.
+handlePlacementRequest(key sender, string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llGetListLength(parts) < 4)
+    {
+        llOwnerSay("[PL] Malformed placement request: " + msg);
+        return;
+    }
+
+    string cmd  = llList2String(parts, 0);
+    integer gx  = (integer)llList2String(parts, 1);
+    integer gy  = (integer)llList2String(parts, 2);
+    key avatar  = (key)llList2String(parts, 3);
+
+    if (cmd != "PLACEMENT_REQUEST")
+    {
+        llOwnerSay("[PL] Unexpected command on placement channel: " + cmd);
+        return;
+    }
+
+    // Cross-reference grid coordinates against map data for verification
+    integer cell_type = getCellType(gx, gy);
+    string type_label;
+    if      (cell_type == CELL_PATH)      type_label = "PATH";
+    else if (cell_type == CELL_BLOCKED)   type_label = "BLOCKED";
+    else if (cell_type == CELL_BUILDABLE) type_label = "BUILDABLE";
+    else                                  type_label = "UNKNOWN";
+
+    llOwnerSay("[PL] Request from " + llKey2Name(avatar)
+        + " -> grid (" + (string)gx + "," + (string)gy + ")"
+        + " cell=" + type_label);
 }
 
 
@@ -389,7 +448,7 @@ handleRegisterMessage(key sender, string msg)
         llOwnerSay("[REG] Malformed register message from " + (string)sender + ": " + msg);
         return;
     }
-    string cmd      = llList2String(parts, 0);
+    string cmd       = llList2String(parts, 0);
     integer obj_type = (integer)llList2String(parts, 1);
     integer gx       = (integer)llList2String(parts, 2);
     integer gy       = (integer)llList2String(parts, 3);
@@ -462,6 +521,18 @@ handleDebugCommand(string msg)
             + " | Map: " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
             + " | Free memory: " + (string)llGetFreeMemory() + " bytes");
     }
+    else if (msg == "/td test placement")
+    {
+        // Simulate a placement click at grid center for sanity checking
+        // without needing to touch the overlay prim
+        integer cx = MAP_WIDTH  / 2;
+        integer cy = MAP_HEIGHT / 2;
+        llOwnerSay("[PL] Simulating placement at grid center ("
+            + (string)cx + "," + (string)cy + ")");
+        handlePlacementRequest(llGetOwner(),
+            "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
+            + "|" + (string)llGetOwner());
+    }
 }
 
 
@@ -485,13 +556,14 @@ default
 
         // Listen on channel 0 for debug commands from owner only
         // (filtered by avatar check inside handleDebugCommand)
+        llListen(PLACEMENT_CHANNEL,     "", NULL_KEY, "");  // new in phase 2
         llListen(0, "", llGetOwner(), "");
 
         // Start heartbeat timer
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
         llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
-        llOwnerSay("[GM] Debug commands: /td dump map | /td dump registry | /td dump all | /td stats");
+        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td test placement");
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -507,6 +579,10 @@ default
         else if (channel == HEARTBEAT_CHANNEL)
         {
             handleHeartbeatMessage(id, msg);
+        }
+        else if (channel == PLACEMENT_CHANNEL)
+        {
+            handlePlacementRequest(id, msg);
         }
         else if (channel == 0 && id == llGetOwner())
         {
