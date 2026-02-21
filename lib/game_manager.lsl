@@ -1,16 +1,16 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 4
-// Adds: enemy position table, arrival handling, wave control, /td wave start
+// Tower Defense Game Manager — Phase 4c
+// Adds: automated spawner/handler pairing via HANDLER_QUERY flow
 // =============================================================================
-// PHASE 4 CHANGES:
-//   - Added SPAWNER_CHANNEL = -2009
-//   - Added ENEMY_CHANNEL   = -2010
-//   - Added gEnemyPositions position table (strided list, EP_STRIDE = 5)
-//   - Added handleEnemyReport() for ENEMY_POSITION and ENEMY_ARRIVED messages
-//   - Added handleSpawnerReport() for SPAWNER_READY acknowledgement
-//   - Added /td wave start debug command to trigger spawning manually
-//   - Sender check bypass in handlePlacementRequest for GM self-test
+// PHASE 4c CHANGES:
+//   - Spawner registration no longer requires a handler key in the message
+//   - Added HANDLER_QUERY handling in handleSpawnerReport():
+//       spawner sends HANDLER_QUERY, GM responds with HANDLER_INFO|<key>
+//       (or HANDLER_INFO|NULL_KEY if no handler registered yet)
+//   - Added SPAWNER_PAIRED handling: spawner confirms its paired handler key,
+//       GM stores the pairing in gSpawnerPairings
+//   - handleRegisterMessage() no longer parses 5th field for spawners
 // =============================================================================
 
 
@@ -28,6 +28,7 @@ integer GM_DISCOVERY_CHANNEL       = -2007;
 integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 integer SPAWNER_CHANNEL            = -2009;
 integer ENEMY_CHANNEL              = -2010;
+integer GRID_INFO_CHANNEL          = -2011;
 
 
 // -----------------------------------------------------------------------------
@@ -57,9 +58,16 @@ integer REG_TYPE_PLACEMENT_HANDLER = 4;
 
 
 // -----------------------------------------------------------------------------
-// ENEMY POSITION TABLE CONSTANTS
-// gEnemyPositions is a strided list tracking live enemy positions.
-// Each entry: [key, pos_x, pos_y, pos_z, last_update_timestamp]
+// SPAWNER PAIRING TABLE
+// [spawner_key, handler_key, ...]
+// One handler may appear multiple times. One spawner appears at most once.
+// -----------------------------------------------------------------------------
+integer PAIRING_STRIDE = 2;
+
+
+// -----------------------------------------------------------------------------
+// ENEMY POSITION TABLE
+// [key, pos_x, pos_y, pos_z, last_update_timestamp, ...]
 // -----------------------------------------------------------------------------
 integer EP_STRIDE = 5;
 
@@ -76,9 +84,10 @@ integer HEARTBEAT_TIMEOUT  = 3;
 // -----------------------------------------------------------------------------
 list    gMap             = [];
 list    gRegistry        = [];
-list    gEnemyPositions  = [];   // live enemy position table
+list    gEnemyPositions  = [];
+list    gSpawnerPairings = [];
 integer gHeartbeatSeq    = 0;
-integer gLives           = 20;   // stubbed — decremented on enemy arrival
+integer gLives           = 20;
 integer gWaveActive      = FALSE;
 
 
@@ -239,9 +248,14 @@ deregisterObject(key id)
     if (obj_type == REG_TYPE_TOWER)
         setCellOccupied(gx, gy, CELL_EMPTY);
 
-    // Clean up position table if this was an enemy
     if (obj_type == REG_TYPE_ENEMY)
         removeEnemyPosition(id);
+
+    if (obj_type == REG_TYPE_SPAWNER)
+        removeSpawnerPairing(id);
+
+    if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+        removePairingsForHandler(id);
 
     llOwnerSay("[REG] Deregistered: " + (string)id);
 }
@@ -249,6 +263,21 @@ deregisterObject(key id)
 integer registryCount()
 {
     return llGetListLength(gRegistry) / REG_STRIDE;
+}
+
+// Returns the key of the first registered placement handler, or NULL_KEY.
+key findRegisteredHandler()
+{
+    integer count = registryCount();
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx      = i * REG_STRIDE;
+        integer obj_type = llList2Integer(gRegistry, idx + 1);
+        if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+            return (key)llList2String(gRegistry, idx);
+    }
+    return NULL_KEY;
 }
 
 dumpRegistry()
@@ -343,9 +372,12 @@ cullStaleObjects()
 
             if (obj_type == REG_TYPE_TOWER)
                 setCellOccupied(gx, gy, CELL_EMPTY);
-
             if (obj_type == REG_TYPE_ENEMY)
                 removeEnemyPosition((key)culled_key);
+            if (obj_type == REG_TYPE_SPAWNER)
+                removeSpawnerPairing((key)culled_key);
+            if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+                removePairingsForHandler((key)culled_key);
 
             culled_count++;
         }
@@ -372,32 +404,139 @@ handleDiscoveryMessage(key sender, string msg)
 
 
 // =============================================================================
-// ENEMY POSITION TABLE  (phase 4)
+// SPAWNER PAIRING TABLE
 // =============================================================================
 
-// Returns the flat list index for an enemy's position entry, or -1 if not found.
+integer findSpawnerPairing(key spawner_key)
+{
+    return llListFindList(gSpawnerPairings, [(string)spawner_key]);
+}
+
+setSpawnerPairing(key spawner_key, key handler_key)
+{
+    integer idx = findSpawnerPairing(spawner_key);
+    if (idx == -1)
+        gSpawnerPairings += [(string)spawner_key, (string)handler_key];
+    else
+        gSpawnerPairings = llListReplaceList(gSpawnerPairings,
+            [(string)handler_key], idx + 1, idx + 1);
+}
+
+removeSpawnerPairing(key spawner_key)
+{
+    integer idx = findSpawnerPairing(spawner_key);
+    if (idx != -1)
+    {
+        gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
+            idx, idx + PAIRING_STRIDE - 1);
+        llOwnerSay("[PAIR] Removed pairing for spawner: " + (string)spawner_key);
+    }
+}
+
+removePairingsForHandler(key handler_key)
+{
+    integer count = llGetListLength(gSpawnerPairings) / PAIRING_STRIDE;
+    integer i = count - 1;
+    for (; i >= 0; i--)
+    {
+        integer idx = i * PAIRING_STRIDE;
+        if ((key)llList2String(gSpawnerPairings, idx + 1) == handler_key)
+        {
+            key spawner = (key)llList2String(gSpawnerPairings, idx);
+            gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
+                idx, idx + PAIRING_STRIDE - 1);
+            llOwnerSay("[PAIR] Removed pairing for spawner " + (string)spawner
+                + " (handler removed)");
+        }
+    }
+}
+
+key getPairedHandler(key spawner_key)
+{
+    integer idx = findSpawnerPairing(spawner_key);
+    if (idx == -1) return NULL_KEY;
+    return (key)llList2String(gSpawnerPairings, idx + 1);
+}
+
+dumpPairings()
+{
+    integer count = llGetListLength(gSpawnerPairings) / PAIRING_STRIDE;
+    llOwnerSay("[PAIR] --- PAIRING DUMP (" + (string)count + " pairs) ---");
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * PAIRING_STRIDE;
+        llOwnerSay("[PAIR] [" + (string)i + "] spawner="
+            + llList2String(gSpawnerPairings, idx)
+            + " -> handler="
+            + llList2String(gSpawnerPairings, idx + 1));
+    }
+    llOwnerSay("[PAIR] --- END DUMP ---");
+}
+
+
+// =============================================================================
+// GRID INFO FORWARDING
+// =============================================================================
+
+// Handles GRID_INFO_REQUEST from a spawner.
+// The spawner sends its own key and the handler key it was given.
+// The GM validates the handler is registered and forwards the request.
+// Format: GRID_INFO_REQUEST|<spawner_key>|<handler_key>
+handleGridInfoRequest(key sender, string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llGetListLength(parts) < 3)
+    {
+        llOwnerSay("[GRID] Malformed GRID_INFO_REQUEST from " + (string)sender);
+        return;
+    }
+
+    key spawner_key = (key)llList2String(parts, 1);
+    key handler_key = (key)llList2String(parts, 2);
+
+    if (sender != spawner_key)
+    {
+        llOwnerSay("[GRID] Sender mismatch in GRID_INFO_REQUEST: " + (string)sender);
+        return;
+    }
+
+    integer handler_idx = findRegistryEntry(handler_key);
+    if (handler_idx == -1 ||
+        llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    {
+        llOwnerSay("[GRID] Handler not registered: " + (string)handler_key);
+        llRegionSayTo(sender, GRID_INFO_CHANNEL, "GRID_INFO_ERROR|HANDLER_NOT_REGISTERED");
+        return;
+    }
+
+    llRegionSayTo(handler_key, GRID_INFO_CHANNEL,
+        "GRID_INFO_REQUEST|" + (string)spawner_key);
+    llOwnerSay("[GRID] Forwarded grid info request: spawner=" + (string)spawner_key
+        + " handler=" + (string)handler_key);
+}
+
+
+// =============================================================================
+// ENEMY POSITION TABLE
+// =============================================================================
+
 integer findEnemyPosition(key id)
 {
     return llListFindList(gEnemyPositions, [(string)id]);
 }
 
-// Inserts or updates an enemy's position in the table.
 upsertEnemyPosition(key id, vector pos)
 {
     integer idx = findEnemyPosition(id);
     if (idx == -1)
-    {
         gEnemyPositions += [(string)id, pos.x, pos.y, pos.z, llGetUnixTime()];
-    }
     else
-    {
         gEnemyPositions = llListReplaceList(gEnemyPositions,
             [pos.x, pos.y, pos.z, llGetUnixTime()],
             idx + 1, idx + 4);
-    }
 }
 
-// Removes an enemy from the position table.
 removeEnemyPosition(key id)
 {
     integer idx = findEnemyPosition(id);
@@ -405,7 +544,6 @@ removeEnemyPosition(key id)
         gEnemyPositions = llDeleteSubList(gEnemyPositions, idx, idx + EP_STRIDE - 1);
 }
 
-// Returns the number of enemies currently tracked in the position table.
 integer enemyCount()
 {
     return llGetListLength(gEnemyPositions) / EP_STRIDE;
@@ -413,17 +551,9 @@ integer enemyCount()
 
 
 // =============================================================================
-// ENEMY REPORT HANDLER  (phase 4)
+// ENEMY REPORT HANDLER
 // =============================================================================
 
-// Handles messages from enemies on ENEMY_REPORT_CHANNEL.
-//
-// Supported message formats:
-//   ENEMY_POSITION|<pos_x>|<pos_y>|<pos_z>
-//     Enemy reporting its current world position. Updates position table.
-//
-//   ENEMY_ARRIVED
-//     Enemy has reached the final waypoint. Decrements lives, cleans up.
 handleEnemyReport(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -431,43 +561,41 @@ handleEnemyReport(key sender, string msg)
 
     if (cmd == "ENEMY_POSITION")
     {
-        if (llGetListLength(parts) < 4)
-        {
-            llOwnerSay("[EN] Malformed ENEMY_POSITION from " + (string)sender);
-            return;
-        }
+        if (llGetListLength(parts) < 4) return;
         vector pos = <(float)llList2String(parts, 1),
                       (float)llList2String(parts, 2),
                       (float)llList2String(parts, 3)>;
         upsertEnemyPosition(sender, pos);
-        // Position updates are frequent — only log occasionally to avoid spam.
-        // Uncomment the line below for verbose position debugging:
-        // llOwnerSay("[EN] Position update from " + (string)sender + ": " + (string)pos);
     }
     else if (cmd == "ENEMY_ARRIVED")
     {
         gLives--;
-        llOwnerSay("[EN] Enemy " + (string)sender + " reached the end. Lives remaining: "
-            + (string)gLives);
+        llOwnerSay("[EN] Enemy reached end. Lives: " + (string)gLives);
         removeEnemyPosition(sender);
         deregisterObject(sender);
     }
     else
     {
-        llOwnerSay("[EN] Unknown enemy report command: " + cmd + " from " + (string)sender);
+        llOwnerSay("[EN] Unknown enemy report: " + cmd);
     }
 }
 
 
 // =============================================================================
-// SPAWNER HANDLER  (phase 4)
+// SPAWNER HANDLER
 // =============================================================================
 
-// Handles messages from the spawner on SPAWNER_CHANNEL.
+// Handles messages from spawners on SPAWNER_CHANNEL.
 //
-// Supported message formats:
-//   SPAWNER_READY
-//     Spawner has initialized and is ready to receive wave commands.
+// SPAWNER_READY
+//   Spawner has registered and is announcing readiness.
+//
+// HANDLER_QUERY
+//   Spawner is asking the GM for the key of the registered placement handler.
+//   GM responds with HANDLER_INFO|<key> — NULL_KEY if none registered yet.
+//
+// SPAWNER_PAIRED|<handler_key>
+//   Spawner confirms which handler it paired with. GM stores the association.
 handleSpawnerReport(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -477,15 +605,47 @@ handleSpawnerReport(key sender, string msg)
     {
         llOwnerSay("[SP] Spawner ready: " + (string)sender);
     }
+    else if (cmd == "HANDLER_QUERY")
+    {
+        key handler_key = findRegisteredHandler();
+        llRegionSayTo(sender, SPAWNER_CHANNEL,
+            "HANDLER_INFO|" + (string)handler_key);
+        if (handler_key == NULL_KEY)
+            llOwnerSay("[SP] HANDLER_QUERY from " + (string)sender
+                + " — no handler registered yet.");
+        else
+            llOwnerSay("[SP] HANDLER_QUERY from " + (string)sender
+                + " — replied with " + (string)handler_key);
+    }
+    else if (cmd == "SPAWNER_PAIRED")
+    {
+        if (llGetListLength(parts) < 2)
+        {
+            llOwnerSay("[SP] Malformed SPAWNER_PAIRED from " + (string)sender);
+            return;
+        }
+        key handler_key = (key)llList2String(parts, 1);
+
+        // Validate handler is still registered before storing pairing
+        integer handler_idx = findRegistryEntry(handler_key);
+        if (handler_idx == -1 ||
+            llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+        {
+            llOwnerSay("[PAIR] Rejected SPAWNER_PAIRED — handler not registered: "
+                + (string)handler_key);
+            return;
+        }
+
+        setSpawnerPairing(sender, handler_key);
+        llOwnerSay("[PAIR] Spawner " + (string)sender
+            + " paired with handler " + (string)handler_key);
+    }
     else
     {
         llOwnerSay("[SP] Unknown spawner message: " + cmd);
     }
 }
 
-// Sends a WAVE_START command to all registered spawners.
-// In phase 4 this triggers a single enemy spawn for testing.
-// Wave count and enemy type parameters will be added in a later phase.
 startWave()
 {
     integer count = registryCount();
@@ -542,7 +702,6 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
 
 handlePlacementRequest(key sender, string msg)
 {
-    // Bypass sender check for GM self-test
     if (sender != llGetKey())
     {
         integer sender_idx = findRegistryEntry(sender);
@@ -557,35 +716,24 @@ handlePlacementRequest(key sender, string msg)
     }
 
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 4)
-    {
-        llOwnerSay("[PL] Malformed placement request: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 4) return;
     string cmd = llList2String(parts, 0);
     integer gx = (integer)llList2String(parts, 1);
     integer gy = (integer)llList2String(parts, 2);
     key avatar = (key)llList2String(parts, 3);
 
-    if (cmd != "PLACEMENT_REQUEST")
-    {
-        llOwnerSay("[PL] Unexpected command on placement channel: " + cmd);
-        return;
-    }
+    if (cmd != "PLACEMENT_REQUEST") return;
 
     if (!inBounds(gx, gy))
     {
         denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS");
         return;
     }
-
-    integer cell_type = getCellType(gx, gy);
-    if (cell_type != CELL_BUILDABLE)
+    if (getCellType(gx, gy) != CELL_BUILDABLE)
     {
         denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE");
         return;
     }
-
     if (getCellOccupied(gx, gy) == CELL_OCCUPIED)
     {
         denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED");
@@ -651,6 +799,9 @@ handleRegisterMessage(key sender, string msg)
             return;
     }
 
+    // Spawners no longer need a handler key at registration time —
+    // pairing is negotiated separately via HANDLER_QUERY / SPAWNER_PAIRED
+
     registerObject(sender, obj_type, gx, gy);
     llRegionSayTo(sender, GM_REGISTER_CHANNEL, "REGISTER_OK|" + (string)obj_type);
 }
@@ -658,12 +809,7 @@ handleRegisterMessage(key sender, string msg)
 handleDeregisterMessage(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    string cmd = llList2String(parts, 0);
-    if (cmd != "DEREGISTER")
-    {
-        llOwnerSay("[DEREG] Unexpected command on deregister channel: " + cmd);
-        return;
-    }
+    if (llList2String(parts, 0) != "DEREGISTER") return;
     deregisterObject(sender);
 }
 
@@ -672,10 +818,7 @@ handleHeartbeatMessage(key sender, string msg)
     list parts = llParseString2List(msg, ["|"], []);
     string cmd = llList2String(parts, 0);
     if (cmd == "ACK" && llGetListLength(parts) >= 2)
-    {
-        integer seq = (integer)llList2String(parts, 1);
-        receiveHeartbeatAck(sender, seq);
-    }
+        receiveHeartbeatAck(sender, (integer)llList2String(parts, 1));
 }
 
 
@@ -691,13 +834,13 @@ handleSetCommand(string msg)
         llOwnerSay("[GM] Usage: /td set <x> <y> <build|path|blocked>");
         return;
     }
-    integer x        = (integer)llList2String(parts, 2);
-    integer y        = (integer)llList2String(parts, 3);
-    string type_str  = llToLower(llList2String(parts, 4));
+    integer x       = (integer)llList2String(parts, 2);
+    integer y       = (integer)llList2String(parts, 3);
+    string type_str = llToLower(llList2String(parts, 4));
 
     if (!inBounds(x, y))
     {
-        llOwnerSay("[GM] /td set: coordinates out of bounds (" + (string)x + "," + (string)y + ")");
+        llOwnerSay("[GM] /td set: out of bounds (" + (string)x + "," + (string)y + ")");
         return;
     }
 
@@ -720,52 +863,45 @@ handleSetCommand(string msg)
     }
     else
     {
-        llOwnerSay("[GM] /td set: unknown type '" + type_str + "' (use: build | path | blocked)");
+        llOwnerSay("[GM] /td set: unknown type '" + type_str + "'");
         return;
     }
 
     setCell(x, y, new_type, new_occupied);
-    string occupied_label;
-    if (new_occupied == CELL_OCCUPIED)
-        occupied_label = " [occupied]";
-    else
-        occupied_label = " [empty]";
-    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str + occupied_label);
+    string occ;
+    if (new_occupied == CELL_OCCUPIED) occ = " [occupied]";
+    else                               occ = " [empty]";
+    llOwnerSay("[MAP] Set (" + (string)x + "," + (string)y + ") to " + type_str + occ);
 }
 
 handleDebugCommand(string msg)
 {
     if (msg == "/td dump map")
-    {
         dumpMap();
-    }
     else if (msg == "/td dump registry")
-    {
         dumpRegistry();
-    }
+    else if (msg == "/td dump pairings")
+        dumpPairings();
     else if (msg == "/td dump all")
     {
         dumpMap();
         dumpRegistry();
+        dumpPairings();
     }
     else if (msg == "/td stats")
     {
-        llOwnerSay("[GM] Registered objects: " + (string)registryCount()
-            + " | Active enemies: " + (string)enemyCount()
+        llOwnerSay("[GM] Objects: " + (string)registryCount()
+            + " | Enemies: " + (string)enemyCount()
+            + " | Pairings: " + (string)(llGetListLength(gSpawnerPairings) / PAIRING_STRIDE)
             + " | Lives: " + (string)gLives
-            + " | Wave active: " + (string)gWaveActive
-            + " | Heartbeat seq: " + (string)gHeartbeatSeq
-            + " | Map: " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
-            + " | Free memory: " + (string)llGetFreeMemory() + " bytes");
+            + " | Wave: " + (string)gWaveActive
+            + " | HB seq: " + (string)gHeartbeatSeq
+            + " | Mem: " + (string)llGetFreeMemory() + " bytes");
     }
     else if (llGetSubString(msg, 0, 7) == "/td set ")
-    {
         handleSetCommand(msg);
-    }
     else if (msg == "/td wave start")
-    {
         startWave();
-    }
     else if (msg == "/td test placement")
     {
         integer cx = MAP_WIDTH  / 2;
@@ -779,21 +915,21 @@ handleDebugCommand(string msg)
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
 
-        llOwnerSay("[PL] Test 2: same cell again (expect CELL_OCCUPIED)");
+        llOwnerSay("[PL] Test 2: same cell (expect CELL_OCCUPIED)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
             + "|" + (string)fake_avatar);
 
-        llOwnerSay("[PL] Test 3: path cell (2,0) (expect NOT_BUILDABLE)");
+        llOwnerSay("[PL] Test 3: path cell 2,0 (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
 
-        llOwnerSay("[PL] Test 4: blocked cell (0,0) (expect NOT_BUILDABLE)");
+        llOwnerSay("[PL] Test 4: blocked cell 0,0 (expect NOT_BUILDABLE)");
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
 
         setCellOccupied(cx, cy, CELL_EMPTY);
-        llOwnerSay("[PL] Test cell (" + (string)cx + "," + (string)cy + ") restored to empty.");
+        llOwnerSay("[PL] Restored (" + (string)cx + "," + (string)cy + ") to empty.");
         llOwnerSay("[PL] --- END TEST SEQUENCE ---");
     }
 }
@@ -818,45 +954,34 @@ default
         llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
         llListen(ENEMY_REPORT_CHANNEL,       "", NULL_KEY, "");
         llListen(SPAWNER_CHANNEL,            "", NULL_KEY, "");
+        llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
 
         llSetTimerEvent(HEARTBEAT_INTERVAL);
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
         llOwnerSay("[GM] Ready. Free memory: " + (string)llGetFreeMemory() + " bytes");
-        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump all | /td stats | /td wave start | /td test placement | /td set <x> <y> <build|path|blocked>");
+        llOwnerSay("[GM] Debug: /td dump map | /td dump registry | /td dump pairings | /td dump all | /td stats | /td wave start | /td test placement | /td set <x> <y> <build|path|blocked>");
     }
 
     listen(integer channel, string name, key id, string msg)
     {
         if (channel == GM_REGISTER_CHANNEL)
-        {
             handleRegisterMessage(id, msg);
-        }
         else if (channel == GM_DEREGISTER_CHANNEL)
-        {
             handleDeregisterMessage(id, msg);
-        }
         else if (channel == HEARTBEAT_CHANNEL)
-        {
             handleHeartbeatMessage(id, msg);
-        }
         else if (channel == PLACEMENT_CHANNEL)
-        {
             handlePlacementRequest(id, msg);
-        }
         else if (channel == GM_DISCOVERY_CHANNEL)
-        {
             handleDiscoveryMessage(id, msg);
-        }
         else if (channel == ENEMY_REPORT_CHANNEL)
-        {
             handleEnemyReport(id, msg);
-        }
         else if (channel == SPAWNER_CHANNEL)
-        {
             handleSpawnerReport(id, msg);
-        }
+        else if (channel == GRID_INFO_CHANNEL)
+            handleGridInfoRequest(id, msg);
         else if (channel == 0 && id == llGetOwner())
         {
             if (llGetSubString(msg, 0, 2) == "/td")
