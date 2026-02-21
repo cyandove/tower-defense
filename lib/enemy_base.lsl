@@ -90,6 +90,38 @@ list parseWaypoints(string waypoint_str)
 
 
 // =============================================================================
+// MOVEMENT AND ARRIVAL HELPERS
+// Must be defined before the state blocks that call them.
+// =============================================================================
+
+moveToCurrentWaypoint()
+{
+    if (gCurrentWaypoint >= llGetListLength(gWaypoints)) return;
+    vector target = llList2Vector(gWaypoints, gCurrentWaypoint);
+    llMoveToTarget(target, MOVE_TAU);
+    llOwnerSay("[EN] Moving to waypoint " + (string)gCurrentWaypoint
+        + " at " + (string)target);
+}
+
+onArrival()
+{
+    llOwnerSay("[EN] Reached end of path. Reporting arrival.");
+    llSetTimerEvent(0);
+    llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
+
+    if (gGM_KEY != NULL_KEY)
+    {
+        llRegionSayTo(gGM_KEY, ENEMY_REPORT_CHANNEL, "ENEMY_ARRIVED");
+        llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
+    }
+
+    // Brief pause so messages can be sent before deletion
+    llSleep(0.5);
+    llDie();
+}
+
+
+// =============================================================================
 // DORMANT STATE
 // Enemy sits here after script load until rezzed by the spawner.
 // =============================================================================
@@ -276,34 +308,4 @@ state active
 }
 
 
-// =============================================================================
-// MOVEMENT AND ARRIVAL HELPERS
-// These are defined outside states so both states can reference them,
-// though in practice only the active state calls them.
-// =============================================================================
 
-moveToCurrentWaypoint()
-{
-    if (gCurrentWaypoint >= llGetListLength(gWaypoints)) return;
-    vector target = llList2Vector(gWaypoints, gCurrentWaypoint);
-    llMoveToTarget(target, MOVE_TAU);
-    llOwnerSay("[EN] Moving to waypoint " + (string)gCurrentWaypoint
-        + " at " + (string)target);
-}
-
-onArrival()
-{
-    llOwnerSay("[EN] Reached end of path. Reporting arrival.");
-    llSetTimerEvent(0);
-    llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
-
-    if (gGM_KEY != NULL_KEY)
-    {
-        llRegionSayTo(gGM_KEY, ENEMY_REPORT_CHANNEL, "ENEMY_ARRIVED");
-        llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
-    }
-
-    // Brief pause so messages can be sent before deletion
-    llSleep(0.5);
-    llDie();
-}
