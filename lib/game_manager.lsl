@@ -127,24 +127,34 @@ vector gridToWorld(integer gx, integer gy)
 
 initMap()
 {
-    list row = [ 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0,
-                 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0 ];
+    // Built as 10 pre-encoded row literals appended one at a time.
+    // No setCell() calls during init means no llListReplaceList copies,
+    // no temp lists, and no peak double-allocation of gMap.
+    // Each row = 10 cells x stride-3 = 30 values: [type, occupied, 0, ...]
+    // Types: 0=blocked  1=buildable  2=path
+    //
+    // Layout (y=0 top):
+    //   y0: X X P B B B B B B B
+    //   y1: B B P B B B B B B B
+    //   y2: B B P B B B B B B B
+    //   y3: B B P B B B B B B B
+    //   y4: B B P P P P P P B B
+    //   y5: B B B B B B B P B B
+    //   y6: B B B B B B B P B B
+    //   y7: B B P P P P P P B B
+    //   y8: B B P B B B B B B B
+    //   y9: B B P B B B B B X X
     gMap = [];
-    integer i;
-    for (i = 0; i < 10; i++)
-        gMap += row;
-
-    // Path
-    setCell(2,0,2,0); setCell(2,1,2,0); setCell(2,2,2,0); setCell(2,3,2,0);
-    setCell(2,4,2,0); setCell(3,4,2,0); setCell(4,4,2,0); setCell(5,4,2,0);
-    setCell(6,4,2,0); setCell(7,4,2,0); setCell(7,5,2,0); setCell(7,6,2,0);
-    setCell(7,7,2,0); setCell(6,7,2,0); setCell(5,7,2,0); setCell(4,7,2,0);
-    setCell(3,7,2,0); setCell(2,7,2,0); setCell(2,8,2,0); setCell(2,9,2,0);
-
-    // Blocked
-    setCell(0,0,0,0); setCell(1,0,0,0);
-    setCell(9,9,0,0); setCell(8,9,0,0);
-
+    gMap += [0,0,0, 0,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
+    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 0,0,0, 0,0,0];
     llOwnerSay("[GM] Map ready. Mem: " + (string)llGetFreeMemory() + "b");
 }
 
