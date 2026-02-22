@@ -1,6 +1,6 @@
 // =============================================================================
 // spawner.lsl
-// Tower Defense Enemy Spawner — Phase 7
+// Tower Defense Enemy Spawner  -  Phase 7
 // =============================================================================
 // PHASE 7 CHANGES:
 //   - Removed hardcoded SPAWNER_GRID_X/Y and WAYPOINT_GRID constants.
@@ -20,7 +20,7 @@
 //       5. On receipt: mark ready, execute any queued wave
 //   - Removed gGridInfoReady (replaced by gConfigured).
 //   - Removed gGridOrigin, gCellSize, gGroundZ globals (no longer needed).
-//   - buildWaypointString() removed — waypoint string arrives pre-built.
+//   - buildWaypointString() removed  -  waypoint string arrives pre-built.
 //   - gWaypointString stores the received waypoint string verbatim.
 //   - Spawn position is now llGetPos() + z offset (controller placed us correctly).
 //   - CONTROLLER_CHANNEL = -2013 added to listen list.
@@ -28,7 +28,7 @@
 //   - Timer retry logic simplified: only retries GM discovery and handler query;
 //     config wait has no retry (controller sends it once on setup).
 //
-// NOTECARD (spawner.cfg) — unchanged from Phase 6:
+// NOTECARD (spawner.cfg)  -  unchanged from Phase 6:
 //   enemy_type_name=Basic Enemy
 //   enemy_health=100.0
 //   enemy_speed=2.0
@@ -38,7 +38,7 @@
 
 
 // -----------------------------------------------------------------------------
-// CHANNEL CONSTANTS — must match game_manager.lsl
+// CHANNEL CONSTANTS  -  must match game_manager.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
 integer GM_DEREGISTER_CHANNEL = -2002;
@@ -58,7 +58,7 @@ integer RETRY_INTERVAL    = 5;
 
 
 // -----------------------------------------------------------------------------
-// ENEMY STATS — populated from notecard, defaults used if key missing
+// ENEMY STATS  -  populated from notecard, defaults used if key missing
 // -----------------------------------------------------------------------------
 string  gEnemyTypeName   = "Basic Enemy";
 float   gEnemyHealth     = 100.0;
@@ -91,7 +91,7 @@ integer gSpawnCount      = 0;
 // Waypoint string received from controller: "x1:y1:z1;x2:y2:z2;..."
 string  gWaypointString  = "";
 
-// Entry cell grid coords — received from controller, used for registration
+// Entry cell grid coords  -  received from controller, used for registration
 integer gGridX           = 0;
 integer gGridY           = 0;
 
@@ -104,7 +104,7 @@ startNotecardLoad()
 {
     if (llGetInventoryType(SPAWNER_NOTECARD) == INVENTORY_NONE)
     {
-        llOwnerSay("[SP] No notecard '" + SPAWNER_NOTECARD + "' — using defaults.");
+        llOwnerSay("[SP] No notecard '" + SPAWNER_NOTECARD + "'  -  using defaults.");
         gConfigLoaded = TRUE;
         afterConfigLoaded();
         return;
@@ -158,7 +158,7 @@ handleGMHere(key gm_key)
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
     llOwnerSay("[SP] Found GM: " + (string)gGM_KEY);
-    // Grid coords not yet known — will be sent in SPAWNER_CONFIG.
+    // Grid coords not yet known  -  will be sent in SPAWNER_CONFIG.
     // Register with (0,0) placeholder; controller sends real coords.
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
         "REGISTER|3|0|0");
@@ -196,7 +196,7 @@ handleHandlerInfo(string msg)
     llOwnerSay("[SP] Handler: " + (string)gHandlerKey);
     llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL,
         "SPAWNER_PAIRED|" + (string)gHandlerKey);
-    // Don't set gPaired yet — wait for SPAWNER_CONFIG from controller
+    // Don't set gPaired yet  -  wait for SPAWNER_CONFIG from controller
     llOwnerSay("[SP] Waiting for controller config...");
 }
 
@@ -262,7 +262,7 @@ handleWaveStart(string msg)
 
     if (!gConfigured)
     {
-        llOwnerSay("[SP] WAVE_START before config — queuing.");
+        llOwnerSay("[SP] WAVE_START before config  -  queuing.");
         gWaveQueued = TRUE;
         gWaveTarget = count;
         return;
@@ -397,11 +397,11 @@ default
                 queryHandler();
                 return;
             }
-            // Registered and paired but no config yet — just wait
+            // Registered and paired but no config yet  -  just wait
             return;
         }
 
-        // Configured — timer used only for wave spawn interval
+        // Configured  -  timer used only for wave spawn interval
         if (gSpawnCount < gWaveTarget)
         {
             spawnEnemy();

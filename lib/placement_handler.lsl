@@ -1,6 +1,6 @@
 // =============================================================================
 // placement_handler.lsl
-// Tower Defense Placement Handler — Phase 7
+// Tower Defense Placement Handler  -  Phase 7
 // =============================================================================
 // PHASE 7 CHANGES:
 //   - Controller rezzes this prim at the correct world position and scale,
@@ -13,7 +13,7 @@
 //   - Everything else unchanged from Phase 6.
 //
 // The placement handler does NOT interact with the controller during normal
-// operation — it is a pure UI layer. The controller only sends SHUTDOWN to it.
+// operation  -  it is a pure UI layer. The controller only sends SHUTDOWN to it.
 // =============================================================================
 
 
@@ -59,7 +59,7 @@ key     gGM_KEY      = NULL_KEY;
 integer gRegistered  = FALSE;
 integer gDiscovering = FALSE;
 
-// Tower labels — index+1 = type_id. Must match towerLabel() in game_manager.lsl.
+// Tower labels  -  index+1 = type_id. Must match towerLabel() in game_manager.lsl.
 list TOWER_LABELS = ["Basic", "Sniper"];
 
 
@@ -242,7 +242,7 @@ handleDialogResponse(key avatar, string response)
 
     if (type_id == -1)
     {
-        llOwnerSay("[PH] Unknown label '" + response + "' — ignoring.");
+        llOwnerSay("[PH] Unknown label '" + response + "'  -  ignoring.");
         removePendingDialog(avatar);
         return;
     }

@@ -1,6 +1,6 @@
 // =============================================================================
 // controller.lsl
-// Tower Defense Controller — Phase 7
+// Tower Defense Controller  -  Phase 7
 // =============================================================================
 // The controller is the only object placed manually in-world. Everything
 // else is rezzed by the controller at setup and cleaned up on game over.
@@ -32,11 +32,11 @@
 //
 // SETUP:
 //   1. Place this prim at the south-west corner of the intended grid area.
-//      Its position becomes gGridOrigin — the (0,0) cell corner.
+//      Its position becomes gGridOrigin  -  the (0,0) cell corner.
 //   2. Add to this prim's inventory:
-//        "GameManager"      — the GM prim object
-//        "PlacementHandler" — the placement handler prim object
-//        "Spawner"          — the spawner prim object
+//        "GameManager"       -  the GM prim object
+//        "PlacementHandler"  -  the placement handler prim object
+//        "Spawner"           -  the spawner prim object
 //   3. Touch to begin setup. The controller rezzes all objects, configures
 //      them, and waits for registration. Touch again once WAITING to start
 //      the first wave.
@@ -44,9 +44,9 @@
 // MAP DEFINITIONS:
 //   Maps are defined as functions returning pre-encoded row lists.
 //   To add a map: add a new loadMap_N() function and a branch in loadMap().
-//   Each row is 10 cells × stride-3 = 30 integers: [type, occupied, 0, ...]
+//   Each row is 10 cells x stride-3 = 30 integers: [type, occupied, 0, ...]
 //   Cell types: 0=blocked  1=buildable  2=path
-//   Entry cell: the path cell on y=0 (top row) — seed for waypoint derivation.
+//   Entry cell: the path cell on y=0 (top row)  -  seed for waypoint derivation.
 // =============================================================================
 
 
@@ -83,7 +83,7 @@ integer STARTING_LIVES = 20;
 
 
 // -----------------------------------------------------------------------------
-// INVENTORY NAMES — must match prim names in this object's inventory
+// INVENTORY NAMES  -  must match prim names in this object's inventory
 // -----------------------------------------------------------------------------
 string INV_GM      = "GameManager";
 string INV_HANDLER = "PlacementHandler";
@@ -123,12 +123,12 @@ integer gSetupPending = 0;    // objects rezzed but not yet registered
 // MAP DEFINITIONS
 // =============================================================================
 // Each loadMap_N() appends the full 300-entry map to gMap as 10 row literals.
-// No setCell() calls — pre-encoded to avoid any llListReplaceList at init time.
+// No setCell() calls  -  pre-encoded to avoid any llListReplaceList at init time.
 // Returns the entry cell x coordinate (entry is always on y=0 for this map set).
 
 integer loadMap_1()
 {
-    // Map 1 — S-bend path
+    // Map 1  -  S-bend path
     // y0: X X P B B B B B B B
     // y1: B B P B B B B B B B
     // y2: B B P B B B B B B B
@@ -153,7 +153,7 @@ integer loadMap_1()
     return 2;   // entry cell x on y=0
 }
 
-// Stub for a second map — add row data here when ready.
+// Stub for a second map  -  add row data here when ready.
 // integer loadMap_2() { gMap = []; gMap += [...]; ... return entry_x; }
 
 loadMap(integer map_id)
@@ -219,59 +219,60 @@ vector cellToWorld(integer gx, integer gy)
 // WAYPOINT DERIVATION
 // Chain-follow from the entry cell. At each step find the one unvisited
 // adjacent path cell and move to it. Stop when we reach the map boundary
-// (the exit cell). Diagonal movement is not used — path is 4-connected.
+// (the exit cell). Diagonal movement is not used  -  path is 4-connected.
 // =============================================================================
+
+// Returns TRUE if (nx,ny) is a valid unvisited path neighbour.
+integer isValidStep(integer nx, integer ny, integer px, integer py)
+{
+    if (nx == px && ny == py)  return FALSE;
+    if (!inBounds(nx, ny))     return FALSE;
+    if (cellType(nx, ny) != 2) return FALSE;
+    return TRUE;
+}
 
 deriveWaypoints(integer entry_x, integer entry_y)
 {
     gWaypoints = [];
     integer cx = entry_x;
     integer cy = entry_y;
-    integer px = -1;   // previous cell — prevents backtracking
+    integer px = -1;   // previous cell - prevents backtracking
     integer py = -1;
 
-    integer dx;
-    integer dy;
-
-    // Walk until we step off the map
-    integer safety = MAP_W * MAP_H;   // upper bound on steps
+    integer safety = MAP_W * MAP_H;
     integer steps;
     for (steps = 0; steps < safety; steps++)
     {
         gWaypoints += [cellToWorld(cx, cy)];
 
+        // Try each cardinal neighbour: N E S W
+        // All four checks use the same px/py before committing the move.
         integer found = FALSE;
-        // Check all four cardinal neighbours
-        list neighbours = [cx, cy-1,  cx+1, cy,  cx, cy+1,  cx-1, cy];
-        integer n;
-        for (n = 0; n < 8 && !found; n += 2)
-        {
-            integer nx = llList2Integer(neighbours, n);
-            integer ny = llList2Integer(neighbours, n + 1);
+        integer ncx = cx;
+        integer ncy = cy;
 
-            // Skip previous cell, skip non-path, skip out-of-bounds
-            if (nx == px && ny == py) jump next;
-            if (!inBounds(nx, ny))    jump next;
-            if (cellType(nx, ny) != 2) jump next;
-
-            px = cx; py = cy;
-            cx = nx; cy = ny;
-            found = TRUE;
-            @next;
-        }
+        if (!found && isValidStep(cx, cy-1, px, py))
+            { ncx = cx;   ncy = cy-1; found = TRUE; }
+        if (!found && isValidStep(cx+1, cy, px, py))
+            { ncx = cx+1; ncy = cy;   found = TRUE; }
+        if (!found && isValidStep(cx, cy+1, px, py))
+            { ncx = cx;   ncy = cy+1; found = TRUE; }
+        if (!found && isValidStep(cx-1, cy, px, py))
+            { ncx = cx-1; ncy = cy;   found = TRUE; }
 
         if (!found)
         {
-            // Dead end — path terminates here (exit cell)
-            break;
+            steps = safety;   // dead end - exit loop
         }
-
-        // If we've walked off the valid map area we're done
-        if (!inBounds(cx, cy)) break;
+        else
+        {
+            px = cx; py = cy;
+            cx = ncx; cy = ncy;
+        }
     }
 
-    integer wcount = llGetListLength(gWaypoints);
-    llOwnerSay("[CTL] Derived " + (string)wcount + " waypoints.");
+    llOwnerSay("[CTL] Derived " + (string)llGetListLength(gWaypoints)
+        + " waypoints.");
 }
 
 // Serialise gWaypoints to the semicolon:colon format the spawner expects:
@@ -299,7 +300,7 @@ string buildWaypointString()
 // The spawner sits at the entry cell; the handler covers the full grid.
 vector entryWorldPos()
 {
-    // First path cell on y=0 — scan left to right
+    // First path cell on y=0  -  scan left to right
     integer x;
     for (x = 0; x < MAP_W; x++)
         if (cellType(x, 0) == 2) return cellToWorld(x, 0);
@@ -342,7 +343,7 @@ rezAllObjects()
 // Once all three core objects are registered we send their configs.
 onObjectRegistered(key obj_key, integer obj_type)
 {
-    if      (obj_type == 1) return;   // tower — not part of setup
+    if      (obj_type == 1) return;   // tower  -  not part of setup
     else if (obj_type == 3) { gSpawner_Key = obj_key; gSetupPending--; }
     else if (obj_type == 4) { gHandler_Key = obj_key; gSetupPending--; }
     // GM registers itself with us directly on CTRL channel, not via GM_REGISTER
@@ -364,7 +365,7 @@ sendConfigs()
 
     // Send spawner its config: grid position, waypoint string
     string wps = buildWaypointString();
-    // Entry cell coords — first path cell on y=0
+    // Entry cell coords  -  first path cell on y=0
     integer ex = 0;
     integer x;
     for (x = 0; x < MAP_W; x++)
@@ -410,7 +411,7 @@ startNextWave()
     gEnemiesOut = count;
     gLifecycle  = STATE_WAVE;
 
-    llOwnerSay("[CTL] Wave " + (string)gWaveNum + " — " + (string)count + " enemies.");
+    llOwnerSay("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
 
     // Tell all registered spawners to start
     llRegionSayTo(gSpawner_Key, -2009, "WAVE_START|" + (string)count);
@@ -517,7 +518,7 @@ handleControllerMessage(key sender, string msg)
         return;
     }
 
-    // Spawner confirms it received and applied its config — game is ready
+    // Spawner confirms it received and applied its config  -  game is ready
     if (cmd == "SPAWNER_CONFIG_OK")
     {
         llOwnerSay("[CTL] Spawner config acknowledged.");
@@ -535,7 +536,7 @@ handleControllerMessage(key sender, string msg)
         return;
     }
 
-    // Life lost — enemy reached the exit
+    // Life lost  -  enemy reached the exit
     if (cmd == "LIFE_LOST")
     {
         onLifeLost();
@@ -580,10 +581,10 @@ handleControllerMessage(key sender, string msg)
 
 // =============================================================================
 // DEBUG DUMP (owner-only chat commands)
-// /td ctl status  — lifecycle, lives, score, wave
-// /td ctl map     — ASCII map dump
-// /td ctl reset   — clean up and reset
-// /td ctl wave    — force-start next wave (testing)
+// /td ctl status   -  lifecycle, lives, score, wave
+// /td ctl map      -  ASCII map dump
+// /td ctl reset    -  clean up and reset
+// /td ctl wave     -  force-start next wave (testing)
 // =============================================================================
 
 handleDebug(string msg)
@@ -666,7 +667,7 @@ default
         else if (gLifecycle == STATE_WAITING)
             startNextWave();
         else
-            llOwnerSay("[CTL] State=" + (string)gLifecycle + " — nothing to do on touch.");
+            llOwnerSay("[CTL] State=" + (string)gLifecycle + "  -  nothing to do on touch.");
     }
 
     listen(integer channel, string name, key id, string msg)

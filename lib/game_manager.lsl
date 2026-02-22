@@ -1,13 +1,13 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 7
+// Tower Defense Game Manager  -  Phase 7
 // =============================================================================
 // PHASE 7 CHANGES (vs Phase 6 optimised):
 //   - Map entirely removed: gMap, all map helpers, initMap(), gridToWorld(),
 //     inBounds(), getCellType(), getCellOccupied(), setCell(), setCellOccupied(),
-//     gGridOrigin, gGridCellSize, gReservations, cullStaleReservations() —
+//     gGridOrigin, gGridCellSize, gReservations, cullStaleReservations()  - 
 //     all gone. Map authority now lives in controller.lsl.
-//   - gLives, gWaveActive, startWave() removed — lifecycle owned by controller.
+//   - gLives, gWaveActive, startWave() removed  -  lifecycle owned by controller.
 //   - Added CONTROLLER_CHANNEL = -2013; GM listens and sends on it.
 //   - Added gCtrl_Key: set when controller sends GM_CONFIG after rezzing.
 //   - Startup sequence: GM now idles in "waiting for config" mode until it
@@ -17,7 +17,7 @@
 //     to controller, stores request in gPendingQuery, resumes in
 //     handleCellData() when CELL_DATA response arrives.
 //   - gPendingQuery: single in-flight placement query
-//     [handler_key, gx, gy, avatar_key]  — stride 4.
+//     [handler_key, gx, gy, avatar_key]   -  stride 4.
 //     Second request while one is in flight is dropped with a retry message.
 //   - Reservation management delegated to controller via CELL_SET messages.
 //   - deregisterObject() sends CELL_SET to controller instead of calling
@@ -87,7 +87,7 @@ string towerLabel(integer type_id)
 
 // =============================================================================
 // GRID HELPERS
-// Only geometry needed for tower rezzing — no cell state stored here.
+// Only geometry needed for tower rezzing  -  no cell state stored here.
 // =============================================================================
 
 vector gridToWorld(integer gx, integer gy)
@@ -111,7 +111,7 @@ integer inBounds(integer x, integer y)
 rezTower(integer gx, integer gy, integer type_id)
 {
     if (gGridCellSize == 0.0)
-    { llOwnerSay("[GM] Cannot rez — no grid config yet."); return; }
+    { llOwnerSay("[GM] Cannot rez  -  no grid config yet."); return; }
 
     string obj_name = towerObjName(type_id);
     if (obj_name == "")
@@ -169,7 +169,7 @@ deregisterObject(key id)
 
     if (obj_type == 1)
     {
-        // Tower gone — tell controller to clear the cell
+        // Tower gone  -  tell controller to clear the cell
         if (gCtrl_Key != NULL_KEY)
             llRegionSayTo(gCtrl_Key, -2013,
                 "CELL_SET|" + (string)gx + "|" + (string)gy + "|0");
@@ -309,7 +309,7 @@ removePairingsForHandler(key handler_key)
 
 // =============================================================================
 // GRID INFO FORWARDING
-// Unchanged from Phase 6 — handler still answers directly to spawner.
+// Unchanged from Phase 6  -  handler still answers directly to spawner.
 // =============================================================================
 
 handleGridInfoRequest(key sender, string msg)
@@ -490,7 +490,7 @@ handleSpawnerReport(key sender, string msg)
 
 
 // =============================================================================
-// PLACEMENT VALIDATION — ASYNC
+// PLACEMENT VALIDATION  -  ASYNC
 //
 // Flow:
 //   1. handlePlacementRequest() validates sender, parses coords, checks bounds.
@@ -551,7 +551,7 @@ handlePlacementRequest(key sender, string msg)
     // Drop if another query is in flight
     if (pendingQueryActive())
     {
-        llRegionSayTo(avatar, 0, "Grid is busy — please try again in a moment.");
+        llRegionSayTo(avatar, 0, "Grid is busy  -  please try again in a moment.");
         return;
     }
 
@@ -580,7 +580,7 @@ handleCellData(string msg)
     if (gx != llList2Integer(gPendingQuery, 1) ||
         gy != llList2Integer(gPendingQuery, 2))
     {
-        llOwnerSay("[PL] Stale CELL_DATA — ignoring.");
+        llOwnerSay("[PL] Stale CELL_DATA  -  ignoring.");
         clearPendingQuery();
         return;
     }
@@ -743,7 +743,7 @@ handleControllerMessage(key sender, string msg)
 
 
 // =============================================================================
-// LINK MESSAGE — debug script on num=42, responds on num=43
+// LINK MESSAGE  -  debug script on num=42, responds on num=43
 // =============================================================================
 
 handleLinkDebug(string cmd)
@@ -826,7 +826,7 @@ default
 
         llSetTimerEvent(10);
 
-        // Announce to controller — it may have rezzed us just now
+        // Announce to controller  -  it may have rezzed us just now
         llSay(-2013, "GM_READY");
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
