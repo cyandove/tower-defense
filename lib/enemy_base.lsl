@@ -120,6 +120,22 @@ onArrival()
     llDie();
 }
 
+onDeath()
+{
+    llOwnerSay("[EN] Killed! Reporting to GM.");
+    llSetTimerEvent(0);
+    llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
+
+    if (gGM_KEY != NULL_KEY)
+    {
+        llRegionSayTo(gGM_KEY, ENEMY_REPORT_CHANNEL, "ENEMY_KILLED");
+        llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
+    }
+
+    llSleep(0.5);
+    llDie();
+}
+
 
 // =============================================================================
 // DORMANT STATE
@@ -224,11 +240,11 @@ state active
                     llOwnerSay("[EN] Malformed ENEMY_CONFIG: " + msg);
                     return;
                 }
-                gSpeed          = (float)llList2String(parts, 1);
-                gHealth         = (float)llList2String(parts, 2);
-                gWaypoints      = parseWaypoints(llList2String(parts, 3));
+                gSpeed           = (float)llList2String(parts, 1);
+                gHealth          = (float)llList2String(parts, 2);
+                gWaypoints       = parseWaypoints(llList2String(parts, 3));
                 gCurrentWaypoint = 0;
-                gConfigReceived = TRUE;
+                gConfigReceived  = TRUE;
 
                 llOwnerSay("[EN] Config received. Speed=" + (string)gSpeed
                     + " Health=" + (string)gHealth
@@ -240,12 +256,24 @@ state active
                     return;
                 }
 
-                // Begin moving to first waypoint
                 moveToCurrentWaypoint();
 
-                // Switch timer to position reporting now that we're moving
                 if (gRegistered)
                     llSetTimerEvent(POSITION_REPORT_INTERVAL);
+            }
+            else if (cmd == "TAKE_DAMAGE")
+            {
+                // Format: TAKE_DAMAGE|<amount>
+                // Sent directly from a tower on a successful hit.
+                if (llGetListLength(parts) < 2) return;
+                float amount = (float)llList2String(parts, 1);
+                gHealth -= amount;
+
+                llOwnerSay("[EN] Hit! -" + (string)((integer)amount)
+                    + " hp, remaining: " + (string)((integer)gHealth));
+
+                if (gHealth <= 0.0)
+                    onDeath();
             }
         }
     }

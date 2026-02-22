@@ -84,6 +84,7 @@ list    gSpawnerPairings = [];
 integer gHeartbeatSeq    = 0;
 integer gLives           = 20;
 integer gWaveActive      = FALSE;
+vector  gTargetPosOut    = ZERO_VECTOR;  // out-param for findNearestEnemy
 
 
 // =============================================================================
@@ -509,10 +510,97 @@ handleEnemyReport(key sender, string msg)
         removeEnemyPosition(sender);
         deregisterObject(sender);
     }
+    else if (cmd == "ENEMY_KILLED")
+    {
+        llOwnerSay("[GM] Enemy killed.");
+        removeEnemyPosition(sender);
+        deregisterObject(sender);
+    }
     else
     {
         llOwnerSay("[EN] Unknown: " + cmd);
     }
+}
+
+
+// =============================================================================
+// TOWER HANDLER
+// =============================================================================
+
+// Finds the nearest enemy to a given position within a given range.
+// Returns the enemy key, or NULL_KEY if none in range.
+// Includes the enemy position in the out-parameters so the GM doesn't need
+// a second lookup when building the TARGET_RESPONSE message.
+key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
+{
+    integer count = llGetListLength(gEnemyPositions) / EP_STRIDE;
+    key   best_key  = NULL_KEY;
+    float best_dist = range + 1.0;
+    vector best_pos = ZERO_VECTOR;
+
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * EP_STRIDE;
+        vector epos = <(float)llList2String(gEnemyPositions, idx + 1),
+                       (float)llList2String(gEnemyPositions, idx + 2),
+                       (float)llList2String(gEnemyPositions, idx + 3)>;
+        float dist = llVecDist(tower_pos, epos);
+        if (dist <= range && dist < best_dist)
+        {
+            best_dist = dist;
+            best_key  = (key)llList2String(gEnemyPositions, idx);
+            best_pos  = epos;
+        }
+    }
+
+    // LSL doesn't support pass-by-reference, so we smuggle the position
+    // back via a global. Not pretty, but avoids a second list lookup.
+    gTargetPosOut = best_pos;
+    return best_key;
+}
+
+// handleTowerReport() handles messages from towers on TOWER_REPORT_CHANNEL.
+//
+// TARGET_REQUEST|<pos_x>|<pos_y>|<pos_z>|<range>
+//   Tower asks for the nearest enemy in range.
+//   GM responds with TARGET_RESPONSE|<key>|<pos_x>|<pos_y>|<pos_z>
+//   or TARGET_RESPONSE|NULL_KEY if none found.
+//
+// ENEMY_KILLED|<enemy_key>  (future)
+//   Tower reports a kill for scoring. Not yet handled — placeholder.
+handleTowerReport(key sender, string msg)
+{
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+
+    if (cmd == "TARGET_REQUEST")
+    {
+        if (llGetListLength(parts) < 5) return;
+
+        vector tower_pos = <(float)llList2String(parts, 1),
+                            (float)llList2String(parts, 2),
+                            (float)llList2String(parts, 3)>;
+        float range      = (float)llList2String(parts, 4);
+
+        key target_key = findNearestEnemy(tower_pos, range, ZERO_VECTOR);
+
+        if (target_key == NULL_KEY)
+        {
+            llRegionSayTo(sender, TOWER_REPORT_CHANNEL,
+                "TARGET_RESPONSE|" + (string)NULL_KEY);
+        }
+        else
+        {
+            llRegionSayTo(sender, TOWER_REPORT_CHANNEL,
+                "TARGET_RESPONSE"
+                + "|" + (string)target_key
+                + "|" + (string)gTargetPosOut.x
+                + "|" + (string)gTargetPosOut.y
+                + "|" + (string)gTargetPosOut.z);
+        }
+    }
+    // ENEMY_KILLED handling will go here in a future phase
 }
 
 
@@ -822,6 +910,7 @@ default
         llListen(PLACEMENT_CHANNEL,          "", NULL_KEY, "");
         llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
         llListen(ENEMY_REPORT_CHANNEL,       "", NULL_KEY, "");
+        llListen(TOWER_REPORT_CHANNEL,       "", NULL_KEY, "");
         llListen(SPAWNER_CHANNEL,            "", NULL_KEY, "");
         llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
@@ -841,6 +930,7 @@ default
         else if (channel == PLACEMENT_CHANNEL)     handlePlacementRequest(id, msg);
         else if (channel == GM_DISCOVERY_CHANNEL)  handleDiscoveryMessage(id, msg);
         else if (channel == ENEMY_REPORT_CHANNEL)  handleEnemyReport(id, msg);
+        else if (channel == TOWER_REPORT_CHANNEL)  handleTowerReport(id, msg);
         else if (channel == SPAWNER_CHANNEL)       handleSpawnerReport(id, msg);
         else if (channel == GRID_INFO_CHANNEL)     handleGridInfoRequest(id, msg);
         else if (channel == 0 && id == llGetOwner())
