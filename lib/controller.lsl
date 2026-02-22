@@ -504,6 +504,8 @@ handleControllerMessage(key sender, string msg)
         gGM_Key = sender;
         gSetupPending--;
         llOwnerSay("[CTL] GM online: " + (string)gGM_Key);
+        // Tell GM who we are so it can forward registrations to us
+        llRegionSayTo(gGM_Key, CTRL, "CTRL_HELLO");
         if (gSetupPending <= 0 && gHandler_Key != NULL_KEY && gSpawner_Key != NULL_KEY)
             sendConfigs();
         return;

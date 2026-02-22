@@ -715,6 +715,13 @@ handleControllerMessage(key sender, string msg)
     list parts = llParseString2List(msg, ["|"], []);
     string cmd = llList2String(parts, 0);
 
+    if (cmd == "CTRL_HELLO")
+    {
+        gCtrl_Key = sender;
+        llOwnerSay("[GM] Controller registered: " + (string)gCtrl_Key);
+        return;
+    }
+
     if (cmd == "GM_CONFIG")
     {
         if (llGetListLength(parts) < 5) return;
