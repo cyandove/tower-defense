@@ -1,61 +1,73 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 6 (memory optimised)
+// Tower Defense Game Manager — Phase 7
 // =============================================================================
-// MEMORY OPTIMISATIONS vs Phase 6:
-//   - All named integer constants removed; literals inlined at call sites.
-//     Each named global costs data-segment space permanently. 30+ eliminated.
-//   - gTowerTypes list, TOWER_TYPE_STRIDE, findTowerType(), getTowerTypeLabels(),
-//     towerTypeFromLabel() all replaced with two lightweight switch functions:
-//     towerObjName(type_id) and towerLabel(type_id). No heap list at load time.
-//   - dumpMap(), dumpRegistry(), dumpPairings(), handleSetCommand(),
-//     handleDebugCommand() moved to game_manager_debug.lsl (separate prim script).
-//     GM exposes them via link_message handler instead. Saves ~5KB of code space.
-//   - isPlaceable() inlined at its single call site — one less function frame.
-//   - getPairedHandler() removed — defined but never called anywhere.
-//   - findNearestEnemy() unused target_pos_out parameter removed.
-//   - Comments trimmed throughout; section headers kept for orientation.
+// PHASE 7 CHANGES (vs Phase 6 optimised):
+//   - Map entirely removed: gMap, all map helpers, initMap(), gridToWorld(),
+//     inBounds(), getCellType(), getCellOccupied(), setCell(), setCellOccupied(),
+//     gGridOrigin, gGridCellSize, gReservations, cullStaleReservations() —
+//     all gone. Map authority now lives in controller.lsl.
+//   - gLives, gWaveActive, startWave() removed — lifecycle owned by controller.
+//   - Added CONTROLLER_CHANNEL = -2013; GM listens and sends on it.
+//   - Added gCtrl_Key: set when controller sends GM_CONFIG after rezzing.
+//   - Startup sequence: GM now idles in "waiting for config" mode until it
+//     receives GM_CONFIG from the controller. Registers with its own key once
+//     configured, then notifies controller GM_CONFIG_OK.
+//   - Cell validation is now async: handlePlacementRequest() sends CELL_QUERY
+//     to controller, stores request in gPendingQuery, resumes in
+//     handleCellData() when CELL_DATA response arrives.
+//   - gPendingQuery: single in-flight placement query
+//     [handler_key, gx, gy, avatar_key]  — stride 4.
+//     Second request while one is in flight is dropped with a retry message.
+//   - Reservation management delegated to controller via CELL_SET messages.
+//   - deregisterObject() sends CELL_SET to controller instead of calling
+//     setCellOccupied() locally.
+//   - handleEnemyReport() forwards LIFE_LOST and ENEMY_KILLED to controller
+//     on CTRL channel instead of decrementing gLives locally.
+//   - GM announces itself to controller on CTRL channel with GM_READY on rez.
+//   - GM notifies controller of handler/spawner registrations via REGISTERED.
+//   - Grid info (origin, cell size) for tower rezzing now comes from GM_CONFIG.
+//   - handleSpawnerReport() SPAWNER_PAIRED and HANDLER_QUERY retained unchanged.
+//   - debug dump functions updated: map dump removed, stats updated.
 //
-// CHANNEL MAP (inlined — listed here for reference only):
-//   GM_REGISTER_CHANNEL        = -2001
-//   GM_DEREGISTER_CHANNEL      = -2002
-//   HEARTBEAT_CHANNEL          = -2003
-//   PLACEMENT_CHANNEL          = -2004
-//   TOWER_REPORT_CHANNEL       = -2005
-//   ENEMY_REPORT_CHANNEL       = -2006
-//   GM_DISCOVERY_CHANNEL       = -2007
-//   PLACEMENT_RESPONSE_CHANNEL = -2008
-//   SPAWNER_CHANNEL            = -2009
-//   ENEMY_CHANNEL              = -2010  (not listened by GM)
-//   GRID_INFO_CHANNEL          = -2011
-//   TOWER_PLACE_CHANNEL        = -2012
-//   LINK_DEBUG_CHANNEL         = 42     (link_message from debug script)
+// CHANNEL MAP (all inlined as literals):
+//   -2001  GM_REGISTER
+//   -2002  GM_DEREGISTER
+//   -2003  HEARTBEAT
+//   -2004  PLACEMENT
+//   -2005  TOWER_REPORT
+//   -2006  ENEMY_REPORT
+//   -2007  GM_DISCOVERY
+//   -2008  PLACEMENT_RESPONSE
+//   -2009  SPAWNER
+//   -2010  ENEMY  (not listened here)
+//   -2011  GRID_INFO
+//   -2012  TOWER_PLACE
+//   -2013  CONTROLLER
 // =============================================================================
 
 
 // -----------------------------------------------------------------------------
 // GLOBAL STATE
-// Only true runtime state lives here — no constants.
 // -----------------------------------------------------------------------------
-list    gMap             = [];   // 300 entries: [type, occupied, 0] x 100 cells
-list    gRegistry        = [];   // [key, type, gx, gy, timestamp, ...]  stride=5
-list    gEnemyPositions  = [];   // [key, x, y, z, timestamp, ...]  stride=5
-list    gSpawnerPairings = [];   // [spawner_key, handler_key, ...]  stride=2
-list    gReservations    = [];   // [gx, gy, avatar_key, timestamp, ...]  stride=4
+list    gRegistry        = [];   // [key, type, gx, gy, timestamp]  stride=5
+list    gEnemyPositions  = [];   // [key, x, y, z, timestamp]  stride=5
+list    gSpawnerPairings = [];   // [spawner_key, handler_key]  stride=2
+list    gPendingQuery    = [];   // [handler_key, gx, gy, avatar_key]  max 1 entry
 integer gHeartbeatSeq    = 0;
-integer gLives           = 20;
-integer gWaveActive      = FALSE;
 vector  gTargetPosOut    = ZERO_VECTOR;
+
+// Set from GM_CONFIG sent by controller after rezzing
+key     gCtrl_Key        = NULL_KEY;
 vector  gGridOrigin      = ZERO_VECTOR;
 float   gGridCellSize    = 0.0;
+integer gConfigured      = FALSE;
 
 
 // =============================================================================
 // TOWER TYPE REGISTRY
-// Two functions replace the gTowerTypes list + three helper functions.
-// To add a tower type: add an else-if branch in each function.
-// type_id matches start_param passed to llRezObject and the GM's tower type list.
-// All tower types currently share the same "Tower" inventory object name.
+// Add a branch in each function for each new tower type.
+// type_id matches start_param passed to llRezObject.
 // =============================================================================
 
 string towerObjName(integer type_id)
@@ -65,8 +77,6 @@ string towerObjName(integer type_id)
     return "";
 }
 
-// Returns the display label shown in the placement handler's llDialog.
-// Must stay in sync with TOWER_LABELS in placement_handler.lsl.
 string towerLabel(integer type_id)
 {
     if (type_id == 1) return "Basic";
@@ -76,47 +86,9 @@ string towerLabel(integer type_id)
 
 
 // =============================================================================
-// MAP HELPERS
-// MAP_WIDTH=10  MAP_HEIGHT=10  CELL_STRIDE=3
-// Cell types:  0=blocked  1=buildable  2=path
-// Occupied:    0=empty    1=occupied   2=reserved
+// GRID HELPERS
+// Only geometry needed for tower rezzing — no cell state stored here.
 // =============================================================================
-
-integer cellIndex(integer x, integer y)
-{
-    return (y * 10 + x) * 3;
-}
-
-integer inBounds(integer x, integer y)
-{
-    return (x >= 0 && x < 10 && y >= 0 && y < 10);
-}
-
-integer getCellType(integer x, integer y)
-{
-    if (!inBounds(x, y)) return 0;
-    return llList2Integer(gMap, cellIndex(x, y));
-}
-
-integer getCellOccupied(integer x, integer y)
-{
-    if (!inBounds(x, y)) return 1;
-    return llList2Integer(gMap, cellIndex(x, y) + 1);
-}
-
-setCell(integer x, integer y, integer type, integer occupied)
-{
-    if (!inBounds(x, y)) return;
-    integer idx = cellIndex(x, y);
-    gMap = llListReplaceList(gMap, [type, occupied, 0], idx, idx + 2);
-}
-
-setCellOccupied(integer x, integer y, integer flag)
-{
-    if (!inBounds(x, y)) return;
-    integer idx = cellIndex(x, y) + 1;
-    gMap = llListReplaceList(gMap, [flag], idx, idx);
-}
 
 vector gridToWorld(integer gx, integer gy)
 {
@@ -125,94 +97,10 @@ vector gridToWorld(integer gx, integer gy)
             gGridOrigin.z + 0.5>;
 }
 
-initMap()
+integer inBounds(integer x, integer y)
 {
-    // Built as 10 pre-encoded row literals appended one at a time.
-    // No setCell() calls during init means no llListReplaceList copies,
-    // no temp lists, and no peak double-allocation of gMap.
-    // Each row = 10 cells x stride-3 = 30 values: [type, occupied, 0, ...]
-    // Types: 0=blocked  1=buildable  2=path
-    //
-    // Layout (y=0 top):
-    //   y0: X X P B B B B B B B
-    //   y1: B B P B B B B B B B
-    //   y2: B B P B B B B B B B
-    //   y3: B B P B B B B B B B
-    //   y4: B B P P P P P P B B
-    //   y5: B B B B B B B P B B
-    //   y6: B B B B B B B P B B
-    //   y7: B B P P P P P P B B
-    //   y8: B B P B B B B B B B
-    //   y9: B B P B B B B B X X
-    gMap = [];
-    gMap += [0,0,0, 0,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 0,0,0, 0,0,0];
-    llOwnerSay("[GM] Map ready. Mem: " + (string)llGetFreeMemory() + "b");
-}
-
-
-// =============================================================================
-// RESERVATION TABLE  stride=4: [gx, gy, avatar_key, timestamp]
-// =============================================================================
-
-integer findReservation(integer gx, integer gy)
-{
-    integer count = llGetListLength(gReservations) / 4;
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * 4;
-        if (llList2Integer(gReservations, idx)     == gx &&
-            llList2Integer(gReservations, idx + 1) == gy)
-            return idx;
-    }
-    return -1;
-}
-
-addReservation(integer gx, integer gy, key avatar)
-{
-    gReservations += [gx, gy, (string)avatar, llGetUnixTime()];
-    setCellOccupied(gx, gy, 2);
-}
-
-clearReservation(integer gx, integer gy)
-{
-    integer idx = findReservation(gx, gy);
-    if (idx == -1) return;
-    gReservations = llDeleteSubList(gReservations, idx, idx + 3);
-    if (getCellOccupied(gx, gy) == 2)
-        setCellOccupied(gx, gy, 0);
-}
-
-cullStaleReservations()
-{
-    integer threshold = llGetUnixTime() - 30;
-    integer count = llGetListLength(gReservations) / 4;
-    integer i = count - 1;
-    integer culled = 0;
-    for (; i >= 0; i--)
-    {
-        integer idx = i * 4;
-        if (llList2Integer(gReservations, idx + 3) < threshold)
-        {
-            integer gx = llList2Integer(gReservations, idx);
-            integer gy = llList2Integer(gReservations, idx + 1);
-            gReservations = llDeleteSubList(gReservations, idx, idx + 3);
-            if (getCellOccupied(gx, gy) == 2)
-                setCellOccupied(gx, gy, 0);
-            culled++;
-        }
-    }
-    if (culled > 0)
-        llOwnerSay("[RES] Cleared " + (string)culled + " stale reservation(s).");
+    // Grid is always 10x10; expand if needed.
+    return (x >= 0 && x < 10 && y >= 0 && y < 10);
 }
 
 
@@ -223,23 +111,14 @@ cullStaleReservations()
 rezTower(integer gx, integer gy, integer type_id)
 {
     if (gGridCellSize == 0.0)
-    {
-        llOwnerSay("[GM] Cannot rez — no grid info.");
-        return;
-    }
+    { llOwnerSay("[GM] Cannot rez — no grid config yet."); return; }
 
     string obj_name = towerObjName(type_id);
     if (obj_name == "")
-    {
-        llOwnerSay("[GM] Unknown tower type: " + (string)type_id);
-        return;
-    }
+    { llOwnerSay("[GM] Unknown tower type: " + (string)type_id); return; }
 
     if (llGetInventoryType(obj_name) == INVENTORY_NONE)
-    {
-        llOwnerSay("[GM] '" + obj_name + "' not in inventory.");
-        return;
-    }
+    { llOwnerSay("[GM] '" + obj_name + "' not in inventory."); return; }
 
     vector rez_pos = gridToWorld(gx, gy);
     llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, type_id);
@@ -250,7 +129,7 @@ rezTower(integer gx, integer gy, integer type_id)
 
 // =============================================================================
 // REGISTRY  stride=5: [key, type, gx, gy, timestamp]
-// Types: 1=tower  2=enemy  3=spawner  4=placement_handler
+// Types: 1=tower  2=enemy  3=spawner  4=handler
 // =============================================================================
 
 integer findRegistryEntry(key id)
@@ -269,6 +148,12 @@ registerObject(key id, integer obj_type, integer gx, integer gy)
     }
     gRegistry += [(string)id, obj_type, gx, gy, llGetUnixTime()];
     llOwnerSay("[REG] +" + (string)obj_type + " " + (string)id);
+
+    // Notify controller of handler and spawner registrations
+    // so it can track their keys for config delivery
+    if (gCtrl_Key != NULL_KEY && (obj_type == 3 || obj_type == 4))
+        llRegionSayTo(gCtrl_Key, -2013,
+            "REGISTERED|" + (string)id + "|" + (string)obj_type);
 }
 
 deregisterObject(key id)
@@ -282,10 +167,16 @@ deregisterObject(key id)
 
     gRegistry = llDeleteSubList(gRegistry, idx, idx + 4);
 
-    if (obj_type == 1) setCellOccupied(gx, gy, 0);
+    if (obj_type == 1)
+    {
+        // Tower gone — tell controller to clear the cell
+        if (gCtrl_Key != NULL_KEY)
+            llRegionSayTo(gCtrl_Key, -2013,
+                "CELL_SET|" + (string)gx + "|" + (string)gy + "|0");
+    }
     if (obj_type == 2) removeEnemyPosition(id);
     if (obj_type == 3) removeSpawnerPairing(id);
-    if (obj_type == 4) { removePairingsForHandler(id); cullStaleReservations(); }
+    if (obj_type == 4) removePairingsForHandler(id);
 
     llOwnerSay("[REG] -" + (string)obj_type + " " + (string)id);
 }
@@ -334,7 +225,7 @@ receiveHeartbeatAck(key id, integer seq)
 
 cullStaleObjects()
 {
-    integer threshold = llGetUnixTime() - 30;   // HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT
+    integer threshold = llGetUnixTime() - 30;
     integer i = registryCount() - 1;
     integer culled = 0;
 
@@ -350,7 +241,9 @@ cullStaleObjects()
 
             gRegistry = llDeleteSubList(gRegistry, idx, idx + 4);
 
-            if (obj_type == 1) setCellOccupied(gx, gy, 0);
+            if (obj_type == 1 && gCtrl_Key != NULL_KEY)
+                llRegionSayTo(gCtrl_Key, -2013,
+                    "CELL_SET|" + (string)gx + "|" + (string)gy + "|0");
             if (obj_type == 2) removeEnemyPosition(cid);
             if (obj_type == 3) removeSpawnerPairing(cid);
             if (obj_type == 4) removePairingsForHandler(cid);
@@ -358,7 +251,6 @@ cullStaleObjects()
             culled++;
         }
     }
-
     if (culled > 0)
         llOwnerSay("[HB] Culled " + (string)culled
             + ". Registry: " + (string)registryCount());
@@ -417,6 +309,7 @@ removePairingsForHandler(key handler_key)
 
 // =============================================================================
 // GRID INFO FORWARDING
+// Unchanged from Phase 6 — handler still answers directly to spawner.
 // =============================================================================
 
 handleGridInfoRequest(key sender, string msg)
@@ -491,16 +384,17 @@ handleEnemyReport(key sender, string msg)
     }
     else if (cmd == "ENEMY_ARRIVED")
     {
-        gLives--;
-        llOwnerSay("[GM] Enemy arrived. Lives: " + (string)gLives);
         removeEnemyPosition(sender);
         deregisterObject(sender);
+        if (gCtrl_Key != NULL_KEY)
+            llRegionSayTo(gCtrl_Key, -2013, "LIFE_LOST");
     }
     else if (cmd == "ENEMY_KILLED")
     {
-        llOwnerSay("[GM] Enemy killed.");
         removeEnemyPosition(sender);
         deregisterObject(sender);
+        if (gCtrl_Key != NULL_KEY)
+            llRegionSayTo(gCtrl_Key, -2013, "ENEMY_KILLED");
     }
 }
 
@@ -594,41 +488,34 @@ handleSpawnerReport(key sender, string msg)
     }
 }
 
-startWave()
+
+// =============================================================================
+// PLACEMENT VALIDATION — ASYNC
+//
+// Flow:
+//   1. handlePlacementRequest() validates sender, parses coords, checks bounds.
+//   2. Sends CELL_QUERY to controller; stores request in gPendingQuery.
+//   3. handleCellData() receives CELL_DATA from controller.
+//   4. Validates cell type and occupied state, then reserves or denies.
+//   5. Reservation = tell controller CELL_SET|gx|gy|2, send PLACEMENT_RESERVED.
+//
+// Only one in-flight query at a time. If a second request arrives while one
+// is pending, the second player gets a "try again" message.
+// =============================================================================
+
+pendingQuerySet(key handler, integer gx, integer gy, key avatar)
 {
-    integer count = registryCount();
-    integer sent  = 0;
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * 5;
-        if (llList2Integer(gRegistry, idx + 1) == 3)
-        {
-            llRegionSayTo((key)llList2String(gRegistry, idx), -2009, "WAVE_START|1");
-            sent++;
-        }
-    }
-    if (sent == 0)
-        llOwnerSay("[GM] No spawners registered.");
-    else
-    {
-        gWaveActive = TRUE;
-        llOwnerSay("[GM] Wave -> " + (string)sent + " spawner(s).");
-    }
+    gPendingQuery = [(string)handler, gx, gy, (string)avatar, llGetUnixTime()];
 }
 
-
-// =============================================================================
-// PLACEMENT VALIDATION
-// =============================================================================
-
-reservePlacement(key handler, integer gx, integer gy, key avatar)
+integer pendingQueryActive()
 {
-    addReservation(gx, gy, avatar);
-    llRegionSayTo(handler, -2008,
-        "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
-    llOwnerSay("[PL] Reserved (" + (string)gx + "," + (string)gy
-        + ") for " + llKey2Name(avatar));
+    return llGetListLength(gPendingQuery) > 0;
+}
+
+clearPendingQuery()
+{
+    gPendingQuery = [];
 }
 
 denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
@@ -636,20 +523,18 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
     llRegionSayTo(handler, -2008,
         "PLACEMENT_DENIED|" + (string)gx + "|" + (string)gy
         + "|" + (string)avatar + "|" + reason);
-    llOwnerSay("[PL] Denied " + reason + " (" + (string)gx + "," + (string)gy + ")");
+    llOwnerSay("[PL] Denied " + reason
+        + " (" + (string)gx + "," + (string)gy + ")");
 }
 
 handlePlacementRequest(key sender, string msg)
 {
-    if (sender != llGetKey())
+    integer sender_idx = findRegistryEntry(sender);
+    if (sender_idx == -1 || llList2Integer(gRegistry, sender_idx + 1) != 4)
     {
-        integer sender_idx = findRegistryEntry(sender);
-        if (sender_idx == -1 || llList2Integer(gRegistry, sender_idx + 1) != 4)
-        {
-            llRegionSayTo(sender, -2008,
-                "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
-            return;
-        }
+        llRegionSayTo(sender, -2008,
+            "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
+        return;
     }
 
     list parts = llParseString2List(msg, ["|"], []);
@@ -663,13 +548,61 @@ handlePlacementRequest(key sender, string msg)
     if (!inBounds(gx, gy))
     { denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS"); return; }
 
-    if (getCellType(gx, gy) != 1)
-    { denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE"); return; }
+    // Drop if another query is in flight
+    if (pendingQueryActive())
+    {
+        llRegionSayTo(avatar, 0, "Grid is busy — please try again in a moment.");
+        return;
+    }
 
-    if (getCellOccupied(gx, gy) != 0)
-    { denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED"); return; }
+    pendingQuerySet(sender, gx, gy, avatar);
+    llRegionSayTo(gCtrl_Key, -2013,
+        "CELL_QUERY|" + (string)gx + "|" + (string)gy);
+}
 
-    reservePlacement(sender, gx, gy, avatar);
+// Called when controller responds with CELL_DATA.
+handleCellData(string msg)
+{
+    if (!pendingQueryActive()) return;
+
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llGetListLength(parts) < 5) return;
+
+    integer gx       = (integer)llList2String(parts, 1);
+    integer gy       = (integer)llList2String(parts, 2);
+    integer ctype    = (integer)llList2String(parts, 3);
+    integer occupied = (integer)llList2String(parts, 4);
+
+    key handler = (key)llList2String(gPendingQuery, 0);
+    key avatar  = (key)llList2String(gPendingQuery, 3);
+
+    // Verify this response matches our pending query
+    if (gx != llList2Integer(gPendingQuery, 1) ||
+        gy != llList2Integer(gPendingQuery, 2))
+    {
+        llOwnerSay("[PL] Stale CELL_DATA — ignoring.");
+        clearPendingQuery();
+        return;
+    }
+
+    clearPendingQuery();
+
+    if (ctype != 1)
+    { denyPlacement(handler, gx, gy, avatar, "NOT_BUILDABLE"); return; }
+
+    if (occupied != 0)
+    { denyPlacement(handler, gx, gy, avatar, "CELL_OCCUPIED"); return; }
+
+    // Reserve: tell controller to mark the cell reserved
+    llRegionSayTo(gCtrl_Key, -2013,
+        "CELL_SET|" + (string)gx + "|" + (string)gy + "|2");
+
+    // Tell handler to show the tower dialog
+    llRegionSayTo(handler, -2008,
+        "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy
+        + "|" + (string)avatar);
+    llOwnerSay("[PL] Reserved (" + (string)gx + "," + (string)gy
+        + ") for " + llKey2Name(avatar));
 }
 
 handleTowerPlaceRequest(key sender, string msg)
@@ -690,28 +623,12 @@ handleTowerPlaceRequest(key sender, string msg)
     key avatar      = (key)llList2String(parts, 3);
     integer type_id = (integer)llList2String(parts, 4);
 
-    integer res_idx = findReservation(gx, gy);
-    if (res_idx == -1)
-    {
-        llRegionSayTo(avatar, 0,
-            "Your tower selection timed out. Please click the grid again.");
-        return;
-    }
-
-    if ((key)llList2String(gReservations, res_idx + 2) != avatar)
-    {
-        llOwnerSay("[PL] Avatar mismatch on placement.");
-        return;
-    }
-
     if (towerObjName(type_id) == "")
-    {
-        llOwnerSay("[PL] Unknown tower type: " + (string)type_id);
-        return;
-    }
+    { llOwnerSay("[PL] Unknown tower type: " + (string)type_id); return; }
 
-    clearReservation(gx, gy);
-    setCellOccupied(gx, gy, 1);
+    // Mark occupied in controller and rez
+    llRegionSayTo(gCtrl_Key, -2013,
+        "CELL_SET|" + (string)gx + "|" + (string)gy + "|1");
     rezTower(gx, gy, type_id);
     llRegionSayTo(avatar, 0,
         "Tower placed at (" + (string)gx + "," + (string)gy + ").");
@@ -752,23 +669,18 @@ handleRegisterMessage(key sender, string msg)
     integer gy       = (integer)llList2String(parts, 3);
 
     if (obj_type < 1 || obj_type > 4)
-    {
-        llOwnerSay("[REG] Unknown type " + (string)obj_type);
-        return;
-    }
+    { llOwnerSay("[REG] Unknown type " + (string)obj_type); return; }
 
     if (obj_type == 4)
     {
         if (!checkPlacementHandlerSlot(sender)) return;
-
+        // Grid geometry still arrives via handler registration for tower rezzing
         if (llGetListLength(parts) >= 8)
         {
             gGridOrigin   = <(float)llList2String(parts, 4),
                              (float)llList2String(parts, 5),
                              (float)llList2String(parts, 6)>;
             gGridCellSize = (float)llList2String(parts, 7);
-            llOwnerSay("[GM] Grid: origin=" + (string)gGridOrigin
-                + " cell=" + (string)gGridCellSize + "m");
         }
     }
 
@@ -792,88 +704,62 @@ handleHeartbeatMessage(key sender, string msg)
 
 
 // =============================================================================
-// LINK MESSAGE — debug commands forwarded from game_manager_debug.lsl
-// Num=42 is the agreed debug channel. str carries the /td command text.
+// CONTROLLER CHANNEL
+// Handles GM_CONFIG from controller and CELL_DATA responses.
+// =============================================================================
+
+handleControllerMessage(key sender, string msg)
+{
+    if (sender != gCtrl_Key && gCtrl_Key != NULL_KEY) return;
+
+    list parts = llParseString2List(msg, ["|"], []);
+    string cmd = llList2String(parts, 0);
+
+    if (cmd == "GM_CONFIG")
+    {
+        if (llGetListLength(parts) < 5) return;
+        gCtrl_Key     = sender;
+        gGridOrigin   = <(float)llList2String(parts, 1),
+                         (float)llList2String(parts, 2),
+                         (float)llList2String(parts, 3)>;
+        gGridCellSize = (float)llList2String(parts, 4);
+        gConfigured   = TRUE;
+
+        llOwnerSay("[GM] Config received from controller. Grid origin="
+            + (string)gGridOrigin + " cell=" + (string)gGridCellSize + "m");
+        llRegionSayTo(gCtrl_Key, -2013, "GM_CONFIG_OK");
+    }
+    else if (cmd == "CELL_DATA")
+    {
+        handleCellData(msg);
+    }
+    else if (cmd == "SHUTDOWN")
+    {
+        llOwnerSay("[GM] Shutdown received. Deregistering and dying.");
+        llRegionSay(-2002, "DEREGISTER");
+        llDie();
+    }
+}
+
+
+// =============================================================================
+// LINK MESSAGE — debug script on num=42, responds on num=43
 // =============================================================================
 
 handleLinkDebug(string cmd)
 {
-    if (cmd == "dump map")
-        llMessageLinked(LINK_THIS, 43, dumpMapStr(), "");
-    else if (cmd == "dump registry")
+    if (cmd == "dump registry")
         llMessageLinked(LINK_THIS, 43, dumpRegistryStr(), "");
     else if (cmd == "dump pairings")
         llMessageLinked(LINK_THIS, 43, dumpPairingsStr(), "");
-    else if (cmd == "dump all")
-    {
-        llMessageLinked(LINK_THIS, 43, dumpMapStr(), "");
-        llMessageLinked(LINK_THIS, 43, dumpRegistryStr(), "");
-        llMessageLinked(LINK_THIS, 43, dumpPairingsStr(), "");
-    }
     else if (cmd == "stats")
-    {
         llMessageLinked(LINK_THIS, 43,
             "Objs:" + (string)registryCount()
             + " Enemies:" + (string)enemyCount()
             + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / 2)
-            + " Res:" + (string)(llGetListLength(gReservations) / 4)
-            + " Lives:" + (string)gLives
-            + " Wave:" + (string)gWaveActive
             + " HB:" + (string)gHeartbeatSeq
+            + " Configured:" + (string)gConfigured
             + " Mem:" + (string)llGetFreeMemory() + "b", "");
-    }
-    else if (llGetSubString(cmd, 0, 3) == "set ")
-    {
-        list parts = llParseString2List(cmd, [" "], []);
-        if (llGetListLength(parts) < 4)
-        {
-            llOwnerSay("[GM] Usage: set <x> <y> <build|path|blocked>");
-            return;
-        }
-        integer x        = (integer)llList2String(parts, 1);
-        integer y        = (integer)llList2String(parts, 2);
-        string  type_str = llToLower(llList2String(parts, 3));
-
-        if (!inBounds(x, y)) { llOwnerSay("[GM] Out of bounds"); return; }
-
-        if      (type_str == "build")
-            setCell(x, y, 1, getCellOccupied(x, y));
-        else if (type_str == "path")
-            setCell(x, y, 2, 0);
-        else if (type_str == "blocked")
-            setCell(x, y, 0, 0);
-        else
-            llOwnerSay("[GM] Unknown type: " + type_str);
-    }
-    else if (cmd == "wave start")
-        startWave();
-}
-
-// Build map dump as a single string for link_message.
-// Called only when debug script requests it — not in hot path.
-string dumpMapStr()
-{
-    string out = "[MAP] B=buildable P=path X=blocked r=reserved o=occupied\n";
-    integer y;
-    for (y = 0; y < 10; y++)
-    {
-        list cells = [];
-        integer x;
-        for (x = 0; x < 10; x++)
-        {
-            integer t = getCellType(x, y);
-            integer o = getCellOccupied(x, y);
-            string ch;
-            if      (t == 2) ch = "P";
-            else if (t == 0) ch = "X";
-            else             ch = "B";
-            if      (o == 1) ch = llToLower(ch);
-            else if (o == 2) ch = "r";
-            cells += [ch];
-        }
-        out += "y" + (string)y + " " + llDumpList2String(cells, " ") + "\n";
-    }
-    return out;
 }
 
 string dumpRegistryStr()
@@ -886,13 +772,13 @@ string dumpRegistryStr()
         integer idx      = i * 5;
         integer obj_type = llList2Integer(gRegistry, idx + 1);
         integer age      = llGetUnixTime() - llList2Integer(gRegistry, idx + 4);
-        string type_label;
-        if      (obj_type == 1) type_label = "TWR";
-        else if (obj_type == 2) type_label = "ENM";
-        else if (obj_type == 3) type_label = "SPN";
-        else if (obj_type == 4) type_label = "PLH";
-        else                    type_label = "UNK";
-        out += type_label
+        string lbl;
+        if      (obj_type == 1) lbl = "TWR";
+        else if (obj_type == 2) lbl = "ENM";
+        else if (obj_type == 3) lbl = "SPN";
+        else if (obj_type == 4) lbl = "PLH";
+        else                    lbl = "UNK";
+        out += lbl
             + " (" + (string)llList2Integer(gRegistry, idx + 2)
             + "," + (string)llList2Integer(gRegistry, idx + 3) + ")"
             + " " + (string)age + "s "
@@ -924,21 +810,24 @@ default
 {
     state_entry()
     {
-        llOwnerSay("[GM] Starting up...");
-        initMap();
+        llOwnerSay("[GM] Starting. Waiting for controller config...");
 
         llListen(-2001, "", NULL_KEY, "");   // GM_REGISTER
         llListen(-2002, "", NULL_KEY, "");   // GM_DEREGISTER
         llListen(-2003, "", NULL_KEY, "");   // HEARTBEAT
         llListen(-2004, "", NULL_KEY, "");   // PLACEMENT
-        llListen(-2006, "", NULL_KEY, "");   // ENEMY_REPORT
         llListen(-2005, "", NULL_KEY, "");   // TOWER_REPORT
+        llListen(-2006, "", NULL_KEY, "");   // ENEMY_REPORT
         llListen(-2007, "", NULL_KEY, "");   // GM_DISCOVERY
         llListen(-2009, "", NULL_KEY, "");   // SPAWNER
         llListen(-2011, "", NULL_KEY, "");   // GRID_INFO
         llListen(-2012, "", NULL_KEY, "");   // TOWER_PLACE
+        llListen(-2013, "", NULL_KEY, "");   // CONTROLLER
 
         llSetTimerEvent(10);
+
+        // Announce to controller — it may have rezzed us just now
+        llSay(-2013, "GM_READY");
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
         llOwnerSay("[GM] Mem: " + (string)llGetFreeMemory() + "b");
@@ -956,6 +845,7 @@ default
         else if (channel == -2009) handleSpawnerReport(id, msg);
         else if (channel == -2011) handleGridInfoRequest(id, msg);
         else if (channel == -2012) handleTowerPlaceRequest(id, msg);
+        else if (channel == -2013) handleControllerMessage(id, msg);
     }
 
     link_message(integer sender_num, integer num, string str, key id)
@@ -965,8 +855,13 @@ default
 
     timer()
     {
+        if (!gConfigured) return;
         sendHeartbeat();
         cullStaleObjects();
-        cullStaleReservations();
+    }
+
+    on_rez(integer start_param)
+    {
+        llResetScript();
     }
 }

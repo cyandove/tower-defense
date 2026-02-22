@@ -1,31 +1,39 @@
 // =============================================================================
 // spawner.lsl
-// Tower Defense Enemy Spawner — Phase 6
+// Tower Defense Enemy Spawner — Phase 7
 // =============================================================================
-// PHASE 6 CHANGES:
-//   - Enemy stats (health, speed, enemies_per_wave, spawn_interval) now loaded
-//     from a notecard instead of hardcoded constants
-//   - Notecard name: SPAWNER_NOTECARD (default "spawner.cfg")
-//   - Notecard format: key=value per line, # for comments, blank lines ignored
-//   - Supported keys: enemy_health, enemy_speed, enemies_per_wave,
-//     spawn_interval, enemy_type_name
-//   - Notecard loaded first; GM discovery begins after load completes
-//   - If notecard missing or unreadable, hardcoded defaults are used
+// PHASE 7 CHANGES:
+//   - Removed hardcoded SPAWNER_GRID_X/Y and WAYPOINT_GRID constants.
+//     These are now received from the controller in a SPAWNER_CONFIG message
+//     on CONTROLLER_CHANNEL (-2013) after the spawner registers with the GM.
+//   - Removed grid-info request/response sequence (GRID_INFO_CHANNEL flow).
+//     The controller sends waypoints as world-space coordinates directly,
+//     so the spawner no longer needs to fetch grid geometry from the handler.
+//   - Added gConfigured flag; wave execution blocked until config received.
+//   - Added SPAWNER_CONFIG handler: parses entry cell coords and waypoint string.
+//   - Sends SPAWNER_CONFIG_OK to controller after successful config parse.
+//   - Startup sequence simplified:
+//       1. Load notecard (enemy stats)
+//       2. Discover GM and register
+//       3. Query for handler and confirm pairing (unchanged)
+//       4. Wait for SPAWNER_CONFIG from controller
+//       5. On receipt: mark ready, execute any queued wave
+//   - Removed gGridInfoReady (replaced by gConfigured).
+//   - Removed gGridOrigin, gCellSize, gGroundZ globals (no longer needed).
+//   - buildWaypointString() removed — waypoint string arrives pre-built.
+//   - gWaypointString stores the received waypoint string verbatim.
+//   - Spawn position is now llGetPos() + z offset (controller placed us correctly).
+//   - CONTROLLER_CHANNEL = -2013 added to listen list.
+//   - Removed GRID_INFO_CHANNEL (-2011) from listen list.
+//   - Timer retry logic simplified: only retries GM discovery and handler query;
+//     config wait has no retry (controller sends it once on setup).
 //
-// NOTECARD SETUP (spawner.cfg):
-//   # Basic enemy config
+// NOTECARD (spawner.cfg) — unchanged from Phase 6:
 //   enemy_type_name=Basic Enemy
 //   enemy_health=100.0
 //   enemy_speed=2.0
 //   enemies_per_wave=5
 //   spawn_interval=3.0
-//
-// SETUP:
-//   1. Place the spawner prim at the path entrance in-world
-//   2. Add this script and a "spawner.cfg" notecard to the prim
-//   3. Add the enemy prim to the spawner's inventory, named "Enemy"
-//   4. Confirm registration via /td dump registry
-//   5. Type /td wave start to trigger a test spawn
 // =============================================================================
 
 
@@ -38,27 +46,15 @@ integer HEARTBEAT_CHANNEL     = -2003;
 integer GM_DISCOVERY_CHANNEL  = -2007;
 integer SPAWNER_CHANNEL       = -2009;
 integer ENEMY_CHANNEL         = -2010;
-integer GRID_INFO_CHANNEL     = -2011;
+integer CONTROLLER_CHANNEL    = -2013;
 
 
 // -----------------------------------------------------------------------------
-// FIXED CONFIGURATION (not notecard-driven)
+// FIXED CONFIGURATION
 // -----------------------------------------------------------------------------
 string  ENEMY_OBJECT_NAME = "Enemy";
 string  SPAWNER_NOTECARD  = "spawner.cfg";
-integer SPAWNER_GRID_X    = 2;
-integer SPAWNER_GRID_Y    = 0;
 integer RETRY_INTERVAL    = 5;
-integer REG_TYPE_SPAWNER  = 3;
-
-// Waypoint path — must stay in sync with initMap() in game_manager.lsl
-list WAYPOINT_GRID = [
-    2, 0,   2, 1,   2, 2,   2, 3,   2, 4,
-    3, 4,   4, 4,   5, 4,   6, 4,   7, 4,
-    7, 5,   7, 6,   7, 7,
-    6, 7,   5, 7,   4, 7,   3, 7,   2, 7,
-    2, 8,   2, 9
-];
 
 
 // -----------------------------------------------------------------------------
@@ -82,19 +78,22 @@ integer gConfigLoaded  = FALSE;
 // -----------------------------------------------------------------------------
 // RUNTIME STATE
 // -----------------------------------------------------------------------------
-key     gGM_KEY        = NULL_KEY;
-key     gHandlerKey    = NULL_KEY;
-integer gRegistered    = FALSE;
-integer gPaired        = FALSE;
-integer gGridInfoReady = FALSE;
-integer gDiscovering   = FALSE;
-integer gWaveQueued    = FALSE;
-integer gWaveTarget    = 0;
-integer gSpawnCount    = 0;
+key     gGM_KEY          = NULL_KEY;
+key     gHandlerKey      = NULL_KEY;
+integer gRegistered      = FALSE;
+integer gPaired          = FALSE;
+integer gConfigured      = FALSE;   // TRUE once SPAWNER_CONFIG received
+integer gDiscovering     = FALSE;
+integer gWaveQueued      = FALSE;
+integer gWaveTarget      = 0;
+integer gSpawnCount      = 0;
 
-vector  gGridOrigin    = ZERO_VECTOR;
-float   gCellSize      = 2.0;
-float   gGroundZ       = 0.0;
+// Waypoint string received from controller: "x1:y1:z1;x2:y2:z2;..."
+string  gWaypointString  = "";
+
+// Entry cell grid coords — received from controller, used for registration
+integer gGridX           = 0;
+integer gGridY           = 0;
 
 
 // =============================================================================
@@ -110,8 +109,7 @@ startNotecardLoad()
         afterConfigLoaded();
         return;
     }
-
-    llOwnerSay("[SP] Loading config from '" + SPAWNER_NOTECARD + "'...");
+    llOwnerSay("[SP] Loading '" + SPAWNER_NOTECARD + "'...");
     gCurrentLine   = 0;
     gNotecardQuery = llGetNotecardLine(SPAWNER_NOTECARD, gCurrentLine);
 }
@@ -119,64 +117,28 @@ startNotecardLoad()
 integer parseConfigLine(string line)
 {
     if (line == "" || llGetSubString(line, 0, 0) == "#") return FALSE;
-
     integer eq = llSubStringIndex(line, "=");
     if (eq == -1) return FALSE;
-
     string k = llToLower(llGetSubString(line, 0, eq - 1));
     string v = llGetSubString(line, eq + 1, -1);
-
     if      (k == "enemy_type_name")  gEnemyTypeName  = v;
     else if (k == "enemy_health")     gEnemyHealth     = (float)v;
     else if (k == "enemy_speed")      gEnemySpeed      = (float)v;
     else if (k == "enemies_per_wave") gEnemiesPerWave  = (integer)v;
     else if (k == "spawn_interval")   gSpawnInterval   = (float)v;
-    else
-    {
-        llOwnerSay("[SP] Unknown config key: " + k);
-        return FALSE;
-    }
+    else { llOwnerSay("[SP] Unknown config key: " + k); return FALSE; }
     return TRUE;
 }
 
 afterConfigLoaded()
 {
-    llOwnerSay("[SP] Config loaded: " + gEnemyTypeName
+    llOwnerSay("[SP] Config: " + gEnemyTypeName
         + " hp=" + (string)gEnemyHealth
         + " spd=" + (string)gEnemySpeed
         + " count=" + (string)gEnemiesPerWave
         + " interval=" + (string)gSpawnInterval + "s");
-
     discoverGM();
     llSetTimerEvent(RETRY_INTERVAL);
-}
-
-
-// =============================================================================
-// GRID-TO-WORLD CONVERSION
-// =============================================================================
-
-vector gridToWorld(integer gx, integer gy)
-{
-    return <gGridOrigin.x + (gx + 0.5) * gCellSize,
-            gGridOrigin.y + (gy + 0.5) * gCellSize,
-            gGroundZ>;
-}
-
-string buildWaypointString()
-{
-    string result = "";
-    integer count = llGetListLength(WAYPOINT_GRID);
-    integer i;
-    for (i = 0; i < count; i += 2)
-    {
-        integer gx = llList2Integer(WAYPOINT_GRID, i);
-        integer gy = llList2Integer(WAYPOINT_GRID, i + 1);
-        vector  wp = gridToWorld(gx, gy);
-        if (result != "") result += ";";
-        result += (string)wp.x + ":" + (string)wp.y + ":" + (string)wp.z;
-    }
-    return result;
 }
 
 
@@ -196,10 +158,10 @@ handleGMHere(key gm_key)
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
     llOwnerSay("[SP] Found GM: " + (string)gGM_KEY);
+    // Grid coords not yet known — will be sent in SPAWNER_CONFIG.
+    // Register with (0,0) placeholder; controller sends real coords.
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
-        "REGISTER|" + (string)REG_TYPE_SPAWNER
-        + "|" + (string)SPAWNER_GRID_X
-        + "|" + (string)SPAWNER_GRID_Y);
+        "REGISTER|3|0|0");
 }
 
 handleRegisterResponse(string msg)
@@ -209,71 +171,62 @@ handleRegisterResponse(string msg)
     if (cmd == "REGISTER_OK")
     {
         gRegistered = TRUE;
-        llOwnerSay("[SP] Registered. Querying for placement handler...");
+        llOwnerSay("[SP] Registered. Querying handler...");
         llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL, "SPAWNER_READY");
         queryHandler();
     }
     else if (cmd == "REGISTER_REJECTED")
-    {
         llOwnerSay("[SP] Registration rejected: " + llList2String(parts, 1));
-    }
 }
 
 queryHandler()
 {
     llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL, "HANDLER_QUERY");
-    llOwnerSay("[SP] Sent HANDLER_QUERY to GM.");
 }
 
 handleHandlerInfo(string msg)
 {
-    list parts = llParseString2List(msg, ["|"], []);
+    list parts      = llParseString2List(msg, ["|"], []);
     key handler_key = (key)llList2String(parts, 1);
 
     if (handler_key == NULL_KEY)
-    {
-        llOwnerSay("[SP] No handler registered yet. Will retry.");
-        return;
-    }
+    { llOwnerSay("[SP] No handler yet. Will retry."); return; }
 
     gHandlerKey = handler_key;
-    llOwnerSay("[SP] Handler found: " + (string)gHandlerKey + ". Confirming pairing...");
-
+    llOwnerSay("[SP] Handler: " + (string)gHandlerKey);
     llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL,
         "SPAWNER_PAIRED|" + (string)gHandlerKey);
-
-    requestGridInfo();
+    // Don't set gPaired yet — wait for SPAWNER_CONFIG from controller
+    llOwnerSay("[SP] Waiting for controller config...");
 }
 
-requestGridInfo()
-{
-    if (gGM_KEY == NULL_KEY || gHandlerKey == NULL_KEY) return;
-    llRegionSayTo(gGM_KEY, GRID_INFO_CHANNEL,
-        "GRID_INFO_REQUEST|" + (string)llGetKey()
-        + "|" + (string)gHandlerKey);
-    llOwnerSay("[SP] Sent GRID_INFO_REQUEST for handler " + (string)gHandlerKey);
-}
 
-handleGridInfo(string msg)
+// =============================================================================
+// CONTROLLER CONFIG
+// SPAWNER_CONFIG|<entry_x>|<entry_y>|<wp_string>
+// Sent by controller after all objects have registered.
+// =============================================================================
+
+handleSpawnerConfig(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 5)
-    {
-        llOwnerSay("[SP] Malformed GRID_INFO: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 4) return;
 
-    gGridOrigin = <(float)llList2String(parts, 1),
-                   (float)llList2String(parts, 2),
-                   (float)llList2String(parts, 3)>;
-    gCellSize      = (float)llList2String(parts, 4);
-    gGroundZ       = gGridOrigin.z;
-    gGridInfoReady = TRUE;
-    gPaired        = TRUE;
+    gGridX          = (integer)llList2String(parts, 1);
+    gGridY          = (integer)llList2String(parts, 2);
+    gWaypointString = llList2String(parts, 3);
+    gConfigured     = TRUE;
+    gPaired         = TRUE;
 
-    llOwnerSay("[SP] Grid info received. Origin=" + (string)gGridOrigin
-        + " CellSize=" + (string)gCellSize + "m. Ready to spawn.");
+    llOwnerSay("[SP] Config received. Entry=("
+        + (string)gGridX + "," + (string)gGridY + ")"
+        + " Waypoints=" + (string)llGetListLength(
+            llParseString2List(gWaypointString, [";"], [])) + " pts");
 
+    // Acknowledge so controller knows we're ready
+    llRegionSayTo(sender, CONTROLLER_CHANNEL, "SPAWNER_CONFIG_OK");
+
+    // Stop retry timer now that we're fully configured
     llSetTimerEvent(0);
 
     if (gWaveQueued)
@@ -282,12 +235,6 @@ handleGridInfo(string msg)
         llOwnerSay("[SP] Executing queued wave.");
         beginWave(gWaveTarget);
     }
-}
-
-handleGridInfoError(string msg)
-{
-    list parts = llParseString2List(msg, ["|"], []);
-    llOwnerSay("[SP] Grid info error: " + llList2String(parts, 1) + ". Will retry.");
 }
 
 
@@ -300,78 +247,58 @@ beginWave(integer enemy_count)
     gWaveTarget = enemy_count;
     if (gWaveTarget < 1) gWaveTarget = 1;
     gSpawnCount = 0;
-
-    llOwnerSay("[SP] Wave started. Spawning "
+    llOwnerSay("[SP] Wave: spawning "
         + (string)gWaveTarget + " " + gEnemyTypeName + "(s).");
     spawnEnemy();
-
     if (gWaveTarget > 1)
         llSetTimerEvent(gSpawnInterval);
 }
 
 handleWaveStart(string msg)
 {
-    list parts = llParseString2List(msg, ["|"], []);
-
-    // WAVE_START can carry a count override; if not, use notecard value
+    list    parts = llParseString2List(msg, ["|"], []);
     integer count = (integer)llList2String(parts, 1);
     if (count < 1) count = gEnemiesPerWave;
 
-    if (!gGridInfoReady)
+    if (!gConfigured)
     {
-        llOwnerSay("[SP] WAVE_START received before setup complete. Queuing.");
+        llOwnerSay("[SP] WAVE_START before config — queuing.");
         gWaveQueued = TRUE;
         gWaveTarget = count;
-
-        if (!gRegistered)
-            discoverGM();
-        else if (gHandlerKey == NULL_KEY)
-            queryHandler();
-        else
-            requestGridInfo();
         return;
     }
-
     beginWave(count);
 }
 
 spawnEnemy()
 {
-    if (llGetInventoryNumber(INVENTORY_OBJECT) == 0)
+    if (llGetInventoryType(ENEMY_OBJECT_NAME) == INVENTORY_NONE)
     {
-        llOwnerSay("[SP] Error: no objects in inventory.");
+        llOwnerSay("[SP] '" + ENEMY_OBJECT_NAME + "' not in inventory.");
         return;
     }
-    if (llGetInventoryName(INVENTORY_OBJECT, 0) != ENEMY_OBJECT_NAME)
-    {
-        llOwnerSay("[SP] Error: expected '" + ENEMY_OBJECT_NAME + "', found '"
-            + llGetInventoryName(INVENTORY_OBJECT, 0) + "'");
-        return;
-    }
-
     vector spawn_pos = llGetPos() + <0.0, 0.0, 0.5>;
     llRezObject(ENEMY_OBJECT_NAME, spawn_pos, ZERO_VECTOR, ZERO_ROTATION, 1);
     gSpawnCount++;
-    llOwnerSay("[SP] Spawned enemy " + (string)gSpawnCount
-        + " of " + (string)gWaveTarget);
+    llOwnerSay("[SP] Spawned " + (string)gSpawnCount
+        + "/" + (string)gWaveTarget);
 }
 
 handleEnemyReady(key sender)
 {
-    string waypoints = buildWaypointString();
     string config = "ENEMY_CONFIG"
         + "|" + (string)gEnemySpeed
         + "|" + (string)gEnemyHealth
-        + "|" + waypoints;
+        + "|" + gWaypointString;
     llRegionSayTo(sender, ENEMY_CHANNEL, config);
-    llOwnerSay("[SP] Sent config to enemy " + (string)sender);
 }
 
 handleHeartbeat(string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
     if (llList2String(parts, 0) == "PING")
-        llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL, "ACK|" + llList2String(parts, 1));
+        llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL,
+            "ACK|" + llList2String(parts, 1));
 }
 
 
@@ -383,30 +310,27 @@ default
 {
     state_entry()
     {
-        llOwnerSay("[SP] Spawner starting up...");
+        llOwnerSay("[SP] Spawner starting...");
 
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
         llListen(SPAWNER_CHANNEL,      "", NULL_KEY, "");
         llListen(ENEMY_CHANNEL,        "", NULL_KEY, "");
-        llListen(GRID_INFO_CHANNEL,    "", NULL_KEY, "");
+        llListen(CONTROLLER_CHANNEL,   "", NULL_KEY, "");
 
-        // Notecard loads first — afterConfigLoaded() triggers GM discovery
         startNotecardLoad();
     }
 
     dataserver(key query_id, string data)
     {
         if (query_id != gNotecardQuery) return;
-
         if (data == EOF)
         {
             gConfigLoaded = TRUE;
             afterConfigLoaded();
             return;
         }
-
         parseConfigLine(data);
         gCurrentLine++;
         gNotecardQuery = llGetNotecardLine(SPAWNER_NOTECARD, gCurrentLine);
@@ -432,8 +356,8 @@ default
         {
             list parts = llParseString2List(msg, ["|"], []);
             string cmd = llList2String(parts, 0);
-            if      (cmd == "WAVE_START")    handleWaveStart(msg);
-            else if (cmd == "HANDLER_INFO")  handleHandlerInfo(msg);
+            if      (cmd == "WAVE_START")   handleWaveStart(msg);
+            else if (cmd == "HANDLER_INFO") handleHandlerInfo(msg);
         }
         else if (channel == ENEMY_CHANNEL)
         {
@@ -441,12 +365,17 @@ default
             if (llList2String(parts, 0) == "ENEMY_READY")
                 handleEnemyReady(id);
         }
-        else if (channel == GRID_INFO_CHANNEL)
+        else if (channel == CONTROLLER_CHANNEL)
         {
             list parts = llParseString2List(msg, ["|"], []);
             string cmd = llList2String(parts, 0);
-            if      (cmd == "GRID_INFO")       handleGridInfo(msg);
-            else if (cmd == "GRID_INFO_ERROR") handleGridInfoError(msg);
+            if      (cmd == "SPAWNER_CONFIG") handleSpawnerConfig(id, msg);
+            else if (cmd == "SHUTDOWN")
+            {
+                llOwnerSay("[SP] Shutdown.");
+                llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
+                llDie();
+            }
         }
     }
 
@@ -454,28 +383,25 @@ default
     {
         if (!gConfigLoaded) return;
 
-        if (!gRegistered)
+        // Retry GM discovery / handler query until configured
+        if (!gConfigured)
         {
-            if (gDiscovering || gGM_KEY == NULL_KEY)
-                discoverGM();
-            else
-                handleGMHere(gGM_KEY);
+            if (!gRegistered)
+            {
+                if (gDiscovering || gGM_KEY == NULL_KEY) discoverGM();
+                else handleGMHere(gGM_KEY);
+                return;
+            }
+            if (gHandlerKey == NULL_KEY)
+            {
+                queryHandler();
+                return;
+            }
+            // Registered and paired but no config yet — just wait
             return;
         }
 
-        if (gHandlerKey == NULL_KEY)
-        {
-            queryHandler();
-            return;
-        }
-
-        if (!gGridInfoReady)
-        {
-            requestGridInfo();
-            return;
-        }
-
-        // Wave spawn interval tick
+        // Configured — timer used only for wave spawn interval
         if (gSpawnCount < gWaveTarget)
         {
             spawnEnemy();
