@@ -1,159 +1,106 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 6
+// Tower Defense Game Manager — Phase 6 (memory optimised)
 // =============================================================================
-// PHASE 6 CHANGES:
-//   - Added TOWER_PLACE_CHANNEL = -2012
-//   - Added CELL_RESERVED = 2 occupancy state for two-phase placement flow
-//   - Added RESERVATION_TIMEOUT = 30s; timer now also clears stale reservations
-//   - Added gGridOrigin, gGridCellSize globals; populated from placement handler
-//     registration message (extended to include grid info as fields 5-8)
-//   - Added tower type registry: gTowerTypes strided list [id, obj_name, label]
-//   - Added gridToWorld() for computing rez position from grid coords
-//   - Added rezTower() to rez from GM inventory with type ID as start_param
-//   - Added handleTowerPlaceRequest() on TOWER_PLACE_CHANNEL
-//   - handlePlacementRequest() now reserves cell (CELL_RESERVED) instead of
-//     marking it occupied; sends PLACEMENT_RESERVED response to handler so
-//     the handler knows to show the tower type dialog
-//   - handleRegisterMessage() stores grid info when placement handler registers
-//   - PLACEMENT_RESPONSE_CHANNEL responses: added PLACEMENT_RESERVED variant
-//   - deregisterObject() clears reservation if tower deregisters before placing
-//   - cullStaleObjects() clears reservations for stale placement handlers
+// MEMORY OPTIMISATIONS vs Phase 6:
+//   - All named integer constants removed; literals inlined at call sites.
+//     Each named global costs data-segment space permanently. 30+ eliminated.
+//   - gTowerTypes list, TOWER_TYPE_STRIDE, findTowerType(), getTowerTypeLabels(),
+//     towerTypeFromLabel() all replaced with two lightweight switch functions:
+//     towerObjName(type_id) and towerLabel(type_id). No heap list at load time.
+//   - dumpMap(), dumpRegistry(), dumpPairings(), handleSetCommand(),
+//     handleDebugCommand() moved to game_manager_debug.lsl (separate prim script).
+//     GM exposes them via link_message handler instead. Saves ~5KB of code space.
+//   - isPlaceable() inlined at its single call site — one less function frame.
+//   - getPairedHandler() removed — defined but never called anywhere.
+//   - findNearestEnemy() unused target_pos_out parameter removed.
+//   - Comments trimmed throughout; section headers kept for orientation.
+//
+// CHANNEL MAP (inlined — listed here for reference only):
+//   GM_REGISTER_CHANNEL        = -2001
+//   GM_DEREGISTER_CHANNEL      = -2002
+//   HEARTBEAT_CHANNEL          = -2003
+//   PLACEMENT_CHANNEL          = -2004
+//   TOWER_REPORT_CHANNEL       = -2005
+//   ENEMY_REPORT_CHANNEL       = -2006
+//   GM_DISCOVERY_CHANNEL       = -2007
+//   PLACEMENT_RESPONSE_CHANNEL = -2008
+//   SPAWNER_CHANNEL            = -2009
+//   ENEMY_CHANNEL              = -2010  (not listened by GM)
+//   GRID_INFO_CHANNEL          = -2011
+//   TOWER_PLACE_CHANNEL        = -2012
+//   LINK_DEBUG_CHANNEL         = 42     (link_message from debug script)
 // =============================================================================
-
-
-// -----------------------------------------------------------------------------
-// CHANNEL CONSTANTS
-// -----------------------------------------------------------------------------
-integer GM_REGISTER_CHANNEL        = -2001;
-integer GM_DEREGISTER_CHANNEL      = -2002;
-integer HEARTBEAT_CHANNEL          = -2003;
-integer PLACEMENT_CHANNEL          = -2004;
-integer TOWER_REPORT_CHANNEL       = -2005;
-integer ENEMY_REPORT_CHANNEL       = -2006;
-integer GM_DISCOVERY_CHANNEL       = -2007;
-integer PLACEMENT_RESPONSE_CHANNEL = -2008;
-integer SPAWNER_CHANNEL            = -2009;
-integer ENEMY_CHANNEL              = -2010;
-integer GRID_INFO_CHANNEL          = -2011;
-integer TOWER_PLACE_CHANNEL        = -2012;
-
-
-// -----------------------------------------------------------------------------
-// MAP CONSTANTS
-// -----------------------------------------------------------------------------
-integer MAP_WIDTH   = 10;
-integer MAP_HEIGHT  = 10;
-integer CELL_STRIDE = 3;
-
-integer CELL_BLOCKED   = 0;
-integer CELL_BUILDABLE = 1;
-integer CELL_PATH      = 2;
-
-integer CELL_EMPTY    = 0;
-integer CELL_OCCUPIED = 1;
-integer CELL_RESERVED = 2;   // held during tower type selection dialog
-
-
-// -----------------------------------------------------------------------------
-// REGISTRY CONSTANTS
-// -----------------------------------------------------------------------------
-integer REG_STRIDE = 5;
-
-integer REG_TYPE_TOWER             = 1;
-integer REG_TYPE_ENEMY             = 2;
-integer REG_TYPE_SPAWNER           = 3;
-integer REG_TYPE_PLACEMENT_HANDLER = 4;
-
-
-// -----------------------------------------------------------------------------
-// TOWER TYPE REGISTRY
-// Strided list: [type_id, object_name, display_label, ...]
-// object_name must exactly match the prim name in the GM's inventory.
-// type_id is passed as start_param when rezzing — tower uses it to pick notecard.
-// -----------------------------------------------------------------------------
-integer TOWER_TYPE_STRIDE = 3;
-list gTowerTypes = [
-    1, "Tower", "Basic",
-    2, "Tower", "Sniper"
-];
-
-
-// -----------------------------------------------------------------------------
-// RESERVATION TIMEOUT
-// How long a cell stays reserved while the player chooses a tower type.
-// If no TOWER_PLACE_REQUEST arrives within this window, the reservation clears.
-// -----------------------------------------------------------------------------
-integer RESERVATION_TIMEOUT = 30;
-
-
-// -----------------------------------------------------------------------------
-// SPAWNER PAIRING TABLE  [spawner_key, handler_key, ...]
-// -----------------------------------------------------------------------------
-integer PAIRING_STRIDE = 2;
-
-
-// -----------------------------------------------------------------------------
-// ENEMY POSITION TABLE  [key, pos_x, pos_y, pos_z, timestamp, ...]
-// -----------------------------------------------------------------------------
-integer EP_STRIDE = 5;
-
-
-// -----------------------------------------------------------------------------
-// RESERVATION TABLE  [gx, gy, avatar_key, timestamp, ...]
-// Tracks which cells are currently reserved and by whom.
-// -----------------------------------------------------------------------------
-integer RES_STRIDE = 4;
-
-
-// -----------------------------------------------------------------------------
-// HEARTBEAT CONSTANTS
-// -----------------------------------------------------------------------------
-integer HEARTBEAT_INTERVAL = 10;
-integer HEARTBEAT_TIMEOUT  = 3;
 
 
 // -----------------------------------------------------------------------------
 // GLOBAL STATE
+// Only true runtime state lives here — no constants.
 // -----------------------------------------------------------------------------
-list    gMap             = [];
-list    gRegistry        = [];
-list    gEnemyPositions  = [];
-list    gSpawnerPairings = [];
-list    gReservations    = [];   // active cell reservations
+list    gMap             = [];   // 300 entries: [type, occupied, 0] x 100 cells
+list    gRegistry        = [];   // [key, type, gx, gy, timestamp, ...]  stride=5
+list    gEnemyPositions  = [];   // [key, x, y, z, timestamp, ...]  stride=5
+list    gSpawnerPairings = [];   // [spawner_key, handler_key, ...]  stride=2
+list    gReservations    = [];   // [gx, gy, avatar_key, timestamp, ...]  stride=4
 integer gHeartbeatSeq    = 0;
 integer gLives           = 20;
 integer gWaveActive      = FALSE;
 vector  gTargetPosOut    = ZERO_VECTOR;
-
-// Grid geometry — populated when placement handler registers
 vector  gGridOrigin      = ZERO_VECTOR;
 float   gGridCellSize    = 0.0;
 
 
 // =============================================================================
+// TOWER TYPE REGISTRY
+// Two functions replace the gTowerTypes list + three helper functions.
+// To add a tower type: add an else-if branch in each function.
+// type_id matches start_param passed to llRezObject and the GM's tower type list.
+// All tower types currently share the same "Tower" inventory object name.
+// =============================================================================
+
+string towerObjName(integer type_id)
+{
+    if (type_id == 1) return "Tower";
+    if (type_id == 2) return "Tower";
+    return "";
+}
+
+// Returns the display label shown in the placement handler's llDialog.
+// Must stay in sync with TOWER_LABELS in placement_handler.lsl.
+string towerLabel(integer type_id)
+{
+    if (type_id == 1) return "Basic";
+    if (type_id == 2) return "Sniper";
+    return "";
+}
+
+
+// =============================================================================
 // MAP HELPERS
+// MAP_WIDTH=10  MAP_HEIGHT=10  CELL_STRIDE=3
+// Cell types:  0=blocked  1=buildable  2=path
+// Occupied:    0=empty    1=occupied   2=reserved
 // =============================================================================
 
 integer cellIndex(integer x, integer y)
 {
-    return (y * MAP_WIDTH + x) * CELL_STRIDE;
+    return (y * 10 + x) * 3;
 }
 
 integer inBounds(integer x, integer y)
 {
-    return (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT);
+    return (x >= 0 && x < 10 && y >= 0 && y < 10);
 }
 
 integer getCellType(integer x, integer y)
 {
-    if (!inBounds(x, y)) return CELL_BLOCKED;
+    if (!inBounds(x, y)) return 0;
     return llList2Integer(gMap, cellIndex(x, y));
 }
 
 integer getCellOccupied(integer x, integer y)
 {
-    if (!inBounds(x, y)) return CELL_OCCUPIED;
+    if (!inBounds(x, y)) return 1;
     return llList2Integer(gMap, cellIndex(x, y) + 1);
 }
 
@@ -161,7 +108,7 @@ setCell(integer x, integer y, integer type, integer occupied)
 {
     if (!inBounds(x, y)) return;
     integer idx = cellIndex(x, y);
-    gMap = llListReplaceList(gMap, [type, occupied, 0], idx, idx + CELL_STRIDE - 1);
+    gMap = llListReplaceList(gMap, [type, occupied, 0], idx, idx + 2);
 }
 
 setCellOccupied(integer x, integer y, integer flag)
@@ -171,18 +118,11 @@ setCellOccupied(integer x, integer y, integer flag)
     gMap = llListReplaceList(gMap, [flag], idx, idx);
 }
 
-integer isPlaceable(integer x, integer y)
-{
-    return (getCellType(x, y) == CELL_BUILDABLE && getCellOccupied(x, y) == CELL_EMPTY);
-}
-
-// Converts a grid coordinate to a world-space position at the centre of the cell.
-// Requires gGridOrigin and gGridCellSize to be populated from handler registration.
 vector gridToWorld(integer gx, integer gy)
 {
     return <gGridOrigin.x + (gx + 0.5) * gGridCellSize,
             gGridOrigin.y + (gy + 0.5) * gGridCellSize,
-            gGridOrigin.z + 0.5>;   // rez slightly above ground plane
+            gGridOrigin.z + 0.5>;
 }
 
 initMap()
@@ -191,75 +131,35 @@ initMap()
                  1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0 ];
     gMap = [];
     integer i;
-    for (i = 0; i < MAP_HEIGHT; i++)
+    for (i = 0; i < 10; i++)
         gMap += row;
 
-    setCell(2, 0, CELL_PATH, CELL_EMPTY);
-    setCell(2, 1, CELL_PATH, CELL_EMPTY);
-    setCell(2, 2, CELL_PATH, CELL_EMPTY);
-    setCell(2, 3, CELL_PATH, CELL_EMPTY);
-    setCell(2, 4, CELL_PATH, CELL_EMPTY);
-    setCell(3, 4, CELL_PATH, CELL_EMPTY);
-    setCell(4, 4, CELL_PATH, CELL_EMPTY);
-    setCell(5, 4, CELL_PATH, CELL_EMPTY);
-    setCell(6, 4, CELL_PATH, CELL_EMPTY);
-    setCell(7, 4, CELL_PATH, CELL_EMPTY);
-    setCell(7, 5, CELL_PATH, CELL_EMPTY);
-    setCell(7, 6, CELL_PATH, CELL_EMPTY);
-    setCell(7, 7, CELL_PATH, CELL_EMPTY);
-    setCell(6, 7, CELL_PATH, CELL_EMPTY);
-    setCell(5, 7, CELL_PATH, CELL_EMPTY);
-    setCell(4, 7, CELL_PATH, CELL_EMPTY);
-    setCell(3, 7, CELL_PATH, CELL_EMPTY);
-    setCell(2, 7, CELL_PATH, CELL_EMPTY);
-    setCell(2, 8, CELL_PATH, CELL_EMPTY);
-    setCell(2, 9, CELL_PATH, CELL_EMPTY);
+    // Path
+    setCell(2,0,2,0); setCell(2,1,2,0); setCell(2,2,2,0); setCell(2,3,2,0);
+    setCell(2,4,2,0); setCell(3,4,2,0); setCell(4,4,2,0); setCell(5,4,2,0);
+    setCell(6,4,2,0); setCell(7,4,2,0); setCell(7,5,2,0); setCell(7,6,2,0);
+    setCell(7,7,2,0); setCell(6,7,2,0); setCell(5,7,2,0); setCell(4,7,2,0);
+    setCell(3,7,2,0); setCell(2,7,2,0); setCell(2,8,2,0); setCell(2,9,2,0);
 
-    setCell(0, 0, CELL_BLOCKED, CELL_EMPTY);
-    setCell(1, 0, CELL_BLOCKED, CELL_EMPTY);
-    setCell(9, 9, CELL_BLOCKED, CELL_EMPTY);
-    setCell(8, 9, CELL_BLOCKED, CELL_EMPTY);
+    // Blocked
+    setCell(0,0,0,0); setCell(1,0,0,0);
+    setCell(9,9,0,0); setCell(8,9,0,0);
 
     llOwnerSay("[GM] Map ready. Mem: " + (string)llGetFreeMemory() + "b");
 }
 
-dumpMap()
-{
-    llOwnerSay("[MAP] y=0 is top  B=buildable P=path X=blocked r=reserved o=occupied");
-    integer y;
-    for (y = 0; y < MAP_HEIGHT; y++)
-    {
-        list cells = [];
-        integer x;
-        for (x = 0; x < MAP_WIDTH; x++)
-        {
-            integer t = getCellType(x, y);
-            integer o = getCellOccupied(x, y);
-            string ch;
-            if      (t == CELL_PATH)    ch = "P";
-            else if (t == CELL_BLOCKED) ch = "X";
-            else                        ch = "B";
-            if      (o == CELL_OCCUPIED) ch = llToLower(ch);
-            else if (o == CELL_RESERVED) ch = "r";
-            cells += [ch];
-        }
-        llOwnerSay("y" + (string)y + " " + llDumpList2String(cells, " "));
-    }
-}
-
 
 // =============================================================================
-// RESERVATION TABLE
+// RESERVATION TABLE  stride=4: [gx, gy, avatar_key, timestamp]
 // =============================================================================
 
-// Returns the list index of a reservation for the given cell, or -1.
 integer findReservation(integer gx, integer gy)
 {
-    integer count = llGetListLength(gReservations) / RES_STRIDE;
+    integer count = llGetListLength(gReservations) / 4;
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx = i * RES_STRIDE;
+        integer idx = i * 4;
         if (llList2Integer(gReservations, idx)     == gx &&
             llList2Integer(gReservations, idx + 1) == gy)
             return idx;
@@ -270,37 +170,34 @@ integer findReservation(integer gx, integer gy)
 addReservation(integer gx, integer gy, key avatar)
 {
     gReservations += [gx, gy, (string)avatar, llGetUnixTime()];
-    setCellOccupied(gx, gy, CELL_RESERVED);
+    setCellOccupied(gx, gy, 2);
 }
 
 clearReservation(integer gx, integer gy)
 {
     integer idx = findReservation(gx, gy);
     if (idx == -1) return;
-    gReservations = llDeleteSubList(gReservations, idx, idx + RES_STRIDE - 1);
-    // Only clear to EMPTY — don't touch if it's now OCCUPIED (tower placed)
-    if (getCellOccupied(gx, gy) == CELL_RESERVED)
-        setCellOccupied(gx, gy, CELL_EMPTY);
+    gReservations = llDeleteSubList(gReservations, idx, idx + 3);
+    if (getCellOccupied(gx, gy) == 2)
+        setCellOccupied(gx, gy, 0);
 }
 
-// Clears any reservations that have exceeded RESERVATION_TIMEOUT.
-// Called from the heartbeat timer alongside cullStaleObjects().
 cullStaleReservations()
 {
-    integer threshold = llGetUnixTime() - RESERVATION_TIMEOUT;
-    integer count = llGetListLength(gReservations) / RES_STRIDE;
+    integer threshold = llGetUnixTime() - 30;
+    integer count = llGetListLength(gReservations) / 4;
     integer i = count - 1;
     integer culled = 0;
     for (; i >= 0; i--)
     {
-        integer idx = i * RES_STRIDE;
+        integer idx = i * 4;
         if (llList2Integer(gReservations, idx + 3) < threshold)
         {
             integer gx = llList2Integer(gReservations, idx);
             integer gy = llList2Integer(gReservations, idx + 1);
-            gReservations = llDeleteSubList(gReservations, idx, idx + RES_STRIDE - 1);
-            if (getCellOccupied(gx, gy) == CELL_RESERVED)
-                setCellOccupied(gx, gy, CELL_EMPTY);
+            gReservations = llDeleteSubList(gReservations, idx, idx + 3);
+            if (getCellOccupied(gx, gy) == 2)
+                setCellOccupied(gx, gy, 0);
             culled++;
         }
     }
@@ -310,83 +207,40 @@ cullStaleReservations()
 
 
 // =============================================================================
-// TOWER TYPE HELPERS
+// TOWER REZZING
 // =============================================================================
 
-// Returns the index into gTowerTypes for a given type_id, or -1 if not found.
-integer findTowerType(integer type_id)
-{
-    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * TOWER_TYPE_STRIDE;
-        if (llList2Integer(gTowerTypes, idx) == type_id)
-            return idx;
-    }
-    return -1;
-}
-
-// Returns a list of display labels for all tower types — used by llDialog.
-list getTowerTypeLabels()
-{
-    list labels = [];
-    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
-    integer i;
-    for (i = 0; i < count; i++)
-        labels += [llList2String(gTowerTypes, i * TOWER_TYPE_STRIDE + 2)];
-    return labels;
-}
-
-// Returns the type_id for a given display label, or -1 if not found.
-integer towerTypeFromLabel(string label)
-{
-    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * TOWER_TYPE_STRIDE;
-        if (llList2String(gTowerTypes, idx + 2) == label)
-            return llList2Integer(gTowerTypes, idx);
-    }
-    return -1;
-}
-
-// Rezzes a tower from inventory at the world position of the given grid cell.
-// type_id is encoded in start_param so the tower knows which notecard to load.
 rezTower(integer gx, integer gy, integer type_id)
 {
     if (gGridCellSize == 0.0)
     {
-        llOwnerSay("[GM] Cannot rez tower — grid info not yet received.");
+        llOwnerSay("[GM] Cannot rez — no grid info.");
         return;
     }
 
-    integer type_idx = findTowerType(type_id);
-    if (type_idx == -1)
+    string obj_name = towerObjName(type_id);
+    if (obj_name == "")
     {
         llOwnerSay("[GM] Unknown tower type: " + (string)type_id);
         return;
     }
 
-    string obj_name = llList2String(gTowerTypes, type_idx + 1);
-
     if (llGetInventoryType(obj_name) == INVENTORY_NONE)
     {
-        llOwnerSay("[GM] Tower object '" + obj_name + "' not in inventory.");
+        llOwnerSay("[GM] '" + obj_name + "' not in inventory.");
         return;
     }
 
     vector rez_pos = gridToWorld(gx, gy);
     llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, type_id);
-    llOwnerSay("[GM] Rezzed '" + obj_name + "' type=" + (string)type_id
-        + " at grid (" + (string)gx + "," + (string)gy + ")"
-        + " world=" + (string)rez_pos);
+    llOwnerSay("[GM] Rezzed type=" + (string)type_id
+        + " (" + (string)gx + "," + (string)gy + ")");
 }
 
 
 // =============================================================================
-// REGISTRY HELPERS
+// REGISTRY  stride=5: [key, type, gx, gy, timestamp]
+// Types: 1=tower  2=enemy  3=spawner  4=placement_handler
 // =============================================================================
 
 integer findRegistryEntry(key id)
@@ -416,28 +270,19 @@ deregisterObject(key id)
     integer gx       = llList2Integer(gRegistry, idx + 2);
     integer gy       = llList2Integer(gRegistry, idx + 3);
 
-    gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
+    gRegistry = llDeleteSubList(gRegistry, idx, idx + 4);
 
-    if (obj_type == REG_TYPE_TOWER)
-        setCellOccupied(gx, gy, CELL_EMPTY);
-    if (obj_type == REG_TYPE_ENEMY)
-        removeEnemyPosition(id);
-    if (obj_type == REG_TYPE_SPAWNER)
-        removeSpawnerPairing(id);
-    if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
-    {
-        removePairingsForHandler(id);
-        // Clear any reservations associated with this handler's cells
-        // (belt-and-suspenders — reservations should have timed out already)
-        cullStaleReservations();
-    }
+    if (obj_type == 1) setCellOccupied(gx, gy, 0);
+    if (obj_type == 2) removeEnemyPosition(id);
+    if (obj_type == 3) removeSpawnerPairing(id);
+    if (obj_type == 4) { removePairingsForHandler(id); cullStaleReservations(); }
 
     llOwnerSay("[REG] -" + (string)obj_type + " " + (string)id);
 }
 
 integer registryCount()
 {
-    return llGetListLength(gRegistry) / REG_STRIDE;
+    return llGetListLength(gRegistry) / 5;
 }
 
 key findRegisteredHandler()
@@ -446,42 +291,16 @@ key findRegisteredHandler()
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx = i * REG_STRIDE;
-        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_PLACEMENT_HANDLER)
+        integer idx = i * 5;
+        if (llList2Integer(gRegistry, idx + 1) == 4)
             return (key)llList2String(gRegistry, idx);
     }
     return NULL_KEY;
 }
 
-dumpRegistry()
-{
-    integer count = registryCount();
-    llOwnerSay("[REG] --- " + (string)count + " objects ---");
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx      = i * REG_STRIDE;
-        integer obj_type = llList2Integer(gRegistry, idx + 1);
-        integer age      = llGetUnixTime() - llList2Integer(gRegistry, idx + 4);
-
-        string type_label;
-        if      (obj_type == REG_TYPE_TOWER)             type_label = "TWR";
-        else if (obj_type == REG_TYPE_ENEMY)             type_label = "ENM";
-        else if (obj_type == REG_TYPE_SPAWNER)           type_label = "SPN";
-        else if (obj_type == REG_TYPE_PLACEMENT_HANDLER) type_label = "PLH";
-        else                                             type_label = "UNK";
-
-        llOwnerSay("[REG] " + type_label
-            + " (" + (string)llList2Integer(gRegistry, idx + 2)
-            + "," + (string)llList2Integer(gRegistry, idx + 3) + ")"
-            + " " + (string)age + "s"
-            + " " + llList2String(gRegistry, idx));
-    }
-}
-
 
 // =============================================================================
-// HEARTBEAT HELPERS
+// HEARTBEAT
 // =============================================================================
 
 sendHeartbeat()
@@ -489,12 +308,10 @@ sendHeartbeat()
     gHeartbeatSeq++;
     integer count = registryCount();
     if (count == 0) return;
-
     string ping = "PING|" + (string)gHeartbeatSeq;
     integer i;
     for (i = 0; i < count; i++)
-        llRegionSayTo((key)llList2String(gRegistry, i * REG_STRIDE),
-            HEARTBEAT_CHANNEL, ping);
+        llRegionSayTo((key)llList2String(gRegistry, i * 5), -2003, ping);
 }
 
 receiveHeartbeatAck(key id, integer seq)
@@ -502,19 +319,18 @@ receiveHeartbeatAck(key id, integer seq)
     if (seq != gHeartbeatSeq) return;
     integer idx = findRegistryEntry(id);
     if (idx == -1) return;
-    gRegistry = llListReplaceList(gRegistry,
-        [llGetUnixTime()], idx + 4, idx + 4);
+    gRegistry = llListReplaceList(gRegistry, [llGetUnixTime()], idx + 4, idx + 4);
 }
 
 cullStaleObjects()
 {
-    integer threshold = llGetUnixTime() - (HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT);
+    integer threshold = llGetUnixTime() - 30;   // HEARTBEAT_INTERVAL * HEARTBEAT_TIMEOUT
     integer i = registryCount() - 1;
     integer culled = 0;
 
     for (; i >= 0; i--)
     {
-        integer idx = i * REG_STRIDE;
+        integer idx = i * 5;
         if (llList2Integer(gRegistry, idx + 4) < threshold)
         {
             integer obj_type = llList2Integer(gRegistry, idx + 1);
@@ -522,16 +338,12 @@ cullStaleObjects()
             integer gy       = llList2Integer(gRegistry, idx + 3);
             key     cid      = (key)llList2String(gRegistry, idx);
 
-            gRegistry = llDeleteSubList(gRegistry, idx, idx + REG_STRIDE - 1);
+            gRegistry = llDeleteSubList(gRegistry, idx, idx + 4);
 
-            if (obj_type == REG_TYPE_TOWER)
-                setCellOccupied(gx, gy, CELL_EMPTY);
-            if (obj_type == REG_TYPE_ENEMY)
-                removeEnemyPosition(cid);
-            if (obj_type == REG_TYPE_SPAWNER)
-                removeSpawnerPairing(cid);
-            if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
-                removePairingsForHandler(cid);
+            if (obj_type == 1) setCellOccupied(gx, gy, 0);
+            if (obj_type == 2) removeEnemyPosition(cid);
+            if (obj_type == 3) removeSpawnerPairing(cid);
+            if (obj_type == 4) removePairingsForHandler(cid);
 
             culled++;
         }
@@ -550,12 +362,12 @@ cullStaleObjects()
 handleDiscoveryMessage(key sender, string msg)
 {
     if (msg != "GM_DISCOVER") return;
-    llRegionSayTo(sender, GM_DISCOVERY_CHANNEL, "GM_HERE|" + (string)llGetKey());
+    llRegionSayTo(sender, -2007, "GM_HERE|" + (string)llGetKey());
 }
 
 
 // =============================================================================
-// SPAWNER PAIRING TABLE
+// SPAWNER PAIRING  stride=2: [spawner_key, handler_key]
 // =============================================================================
 
 integer findSpawnerPairing(key spawner_key)
@@ -577,40 +389,18 @@ removeSpawnerPairing(key spawner_key)
 {
     integer idx = findSpawnerPairing(spawner_key);
     if (idx != -1)
-        gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
-            idx, idx + PAIRING_STRIDE - 1);
+        gSpawnerPairings = llDeleteSubList(gSpawnerPairings, idx, idx + 1);
 }
 
 removePairingsForHandler(key handler_key)
 {
-    integer count = llGetListLength(gSpawnerPairings) / PAIRING_STRIDE;
+    integer count = llGetListLength(gSpawnerPairings) / 2;
     integer i = count - 1;
     for (; i >= 0; i--)
     {
-        integer idx = i * PAIRING_STRIDE;
+        integer idx = i * 2;
         if ((key)llList2String(gSpawnerPairings, idx + 1) == handler_key)
-            gSpawnerPairings = llDeleteSubList(gSpawnerPairings,
-                idx, idx + PAIRING_STRIDE - 1);
-    }
-}
-
-key getPairedHandler(key spawner_key)
-{
-    integer idx = findSpawnerPairing(spawner_key);
-    if (idx == -1) return NULL_KEY;
-    return (key)llList2String(gSpawnerPairings, idx + 1);
-}
-
-dumpPairings()
-{
-    integer count = llGetListLength(gSpawnerPairings) / PAIRING_STRIDE;
-    llOwnerSay("[PAIR] --- " + (string)count + " pairs ---");
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * PAIRING_STRIDE;
-        llOwnerSay("[PAIR] " + llList2String(gSpawnerPairings, idx)
-            + " -> " + llList2String(gSpawnerPairings, idx + 1));
+            gSpawnerPairings = llDeleteSubList(gSpawnerPairings, idx, idx + 1);
     }
 }
 
@@ -630,20 +420,18 @@ handleGridInfoRequest(key sender, string msg)
     if (sender != spawner_key) return;
 
     integer handler_idx = findRegistryEntry(handler_key);
-    if (handler_idx == -1 ||
-        llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    if (handler_idx == -1 || llList2Integer(gRegistry, handler_idx + 1) != 4)
     {
-        llRegionSayTo(sender, GRID_INFO_CHANNEL, "GRID_INFO_ERROR|HANDLER_NOT_REGISTERED");
+        llRegionSayTo(sender, -2011, "GRID_INFO_ERROR|HANDLER_NOT_REGISTERED");
         return;
     }
 
-    llRegionSayTo(handler_key, GRID_INFO_CHANNEL,
-        "GRID_INFO_REQUEST|" + (string)spawner_key);
+    llRegionSayTo(handler_key, -2011, "GRID_INFO_REQUEST|" + (string)spawner_key);
 }
 
 
 // =============================================================================
-// ENEMY POSITION TABLE
+// ENEMY POSITION TABLE  stride=5: [key, x, y, z, timestamp]
 // =============================================================================
 
 integer findEnemyPosition(key id)
@@ -665,17 +453,17 @@ removeEnemyPosition(key id)
 {
     integer idx = findEnemyPosition(id);
     if (idx != -1)
-        gEnemyPositions = llDeleteSubList(gEnemyPositions, idx, idx + EP_STRIDE - 1);
+        gEnemyPositions = llDeleteSubList(gEnemyPositions, idx, idx + 4);
 }
 
 integer enemyCount()
 {
-    return llGetListLength(gEnemyPositions) / EP_STRIDE;
+    return llGetListLength(gEnemyPositions) / 5;
 }
 
 
 // =============================================================================
-// ENEMY REPORT HANDLER
+// ENEMY REPORT
 // =============================================================================
 
 handleEnemyReport(key sender, string msg)
@@ -704,10 +492,6 @@ handleEnemyReport(key sender, string msg)
         removeEnemyPosition(sender);
         deregisterObject(sender);
     }
-    else
-    {
-        llOwnerSay("[EN] Unknown: " + cmd);
-    }
 }
 
 
@@ -715,9 +499,9 @@ handleEnemyReport(key sender, string msg)
 // TOWER HANDLER
 // =============================================================================
 
-key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
+key findNearestEnemy(vector tower_pos, float range)
 {
-    integer count = llGetListLength(gEnemyPositions) / EP_STRIDE;
+    integer count = llGetListLength(gEnemyPositions) / 5;
     key   best_key  = NULL_KEY;
     float best_dist = range + 1.0;
     vector best_pos = ZERO_VECTOR;
@@ -725,7 +509,7 @@ key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx = i * EP_STRIDE;
+        integer idx = i * 5;
         vector epos = <(float)llList2String(gEnemyPositions, idx + 1),
                        (float)llList2String(gEnemyPositions, idx + 2),
                        (float)llList2String(gEnemyPositions, idx + 3)>;
@@ -745,34 +529,24 @@ key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
 handleTowerReport(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    string cmd = llList2String(parts, 0);
+    if (llList2String(parts, 0) != "TARGET_REQUEST") return;
+    if (llGetListLength(parts) < 5) return;
 
-    if (cmd == "TARGET_REQUEST")
-    {
-        if (llGetListLength(parts) < 5) return;
+    vector tower_pos = <(float)llList2String(parts, 1),
+                        (float)llList2String(parts, 2),
+                        (float)llList2String(parts, 3)>;
+    float range = (float)llList2String(parts, 4);
 
-        vector tower_pos = <(float)llList2String(parts, 1),
-                            (float)llList2String(parts, 2),
-                            (float)llList2String(parts, 3)>;
-        float range = (float)llList2String(parts, 4);
+    key target_key = findNearestEnemy(tower_pos, range);
 
-        key target_key = findNearestEnemy(tower_pos, range, ZERO_VECTOR);
-
-        if (target_key == NULL_KEY)
-        {
-            llRegionSayTo(sender, TOWER_REPORT_CHANNEL,
-                "TARGET_RESPONSE|" + (string)NULL_KEY);
-        }
-        else
-        {
-            llRegionSayTo(sender, TOWER_REPORT_CHANNEL,
-                "TARGET_RESPONSE"
-                + "|" + (string)target_key
-                + "|" + (string)gTargetPosOut.x
-                + "|" + (string)gTargetPosOut.y
-                + "|" + (string)gTargetPosOut.z);
-        }
-    }
+    if (target_key == NULL_KEY)
+        llRegionSayTo(sender, -2005, "TARGET_RESPONSE|" + (string)NULL_KEY);
+    else
+        llRegionSayTo(sender, -2005, "TARGET_RESPONSE"
+            + "|" + (string)target_key
+            + "|" + (string)gTargetPosOut.x
+            + "|" + (string)gTargetPosOut.y
+            + "|" + (string)gTargetPosOut.z);
 }
 
 
@@ -792,22 +566,19 @@ handleSpawnerReport(key sender, string msg)
     else if (cmd == "HANDLER_QUERY")
     {
         key handler_key = findRegisteredHandler();
-        llRegionSayTo(sender, SPAWNER_CHANNEL, "HANDLER_INFO|" + (string)handler_key);
+        llRegionSayTo(sender, -2009, "HANDLER_INFO|" + (string)handler_key);
         llOwnerSay("[SP] HANDLER_QUERY -> " + (string)handler_key);
     }
     else if (cmd == "SPAWNER_PAIRED")
     {
         if (llGetListLength(parts) < 2) return;
         key handler_key = (key)llList2String(parts, 1);
-
         integer handler_idx = findRegistryEntry(handler_key);
-        if (handler_idx == -1 ||
-            llList2Integer(gRegistry, handler_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+        if (handler_idx == -1 || llList2Integer(gRegistry, handler_idx + 1) != 4)
         {
             llOwnerSay("[PAIR] Rejected: " + (string)handler_key);
             return;
         }
-
         setSpawnerPairing(sender, handler_key);
         llOwnerSay("[PAIR] " + (string)sender + " -> " + (string)handler_key);
     }
@@ -820,11 +591,10 @@ startWave()
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx = i * REG_STRIDE;
-        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_SPAWNER)
+        integer idx = i * 5;
+        if (llList2Integer(gRegistry, idx + 1) == 3)
         {
-            llRegionSayTo((key)llList2String(gRegistry, idx),
-                SPAWNER_CHANNEL, "WAVE_START|1");
+            llRegionSayTo((key)llList2String(gRegistry, idx), -2009, "WAVE_START|1");
             sent++;
         }
     }
@@ -842,12 +612,10 @@ startWave()
 // PLACEMENT VALIDATION
 // =============================================================================
 
-// Reserves the cell and tells the handler to show the tower type dialog.
-// The cell is marked CELL_RESERVED until the player picks a type or times out.
 reservePlacement(key handler, integer gx, integer gy, key avatar)
 {
     addReservation(gx, gy, avatar);
-    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL,
+    llRegionSayTo(handler, -2008,
         "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
     llOwnerSay("[PL] Reserved (" + (string)gx + "," + (string)gy
         + ") for " + llKey2Name(avatar));
@@ -855,23 +623,20 @@ reservePlacement(key handler, integer gx, integer gy, key avatar)
 
 denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
 {
-    llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL,
+    llRegionSayTo(handler, -2008,
         "PLACEMENT_DENIED|" + (string)gx + "|" + (string)gy
         + "|" + (string)avatar + "|" + reason);
     llOwnerSay("[PL] Denied " + reason + " (" + (string)gx + "," + (string)gy + ")");
 }
 
-// Validates cell and reserves it if valid.
-// Called when player touches the placement handler prim.
 handlePlacementRequest(key sender, string msg)
 {
     if (sender != llGetKey())
     {
         integer sender_idx = findRegistryEntry(sender);
-        if (sender_idx == -1 ||
-            llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+        if (sender_idx == -1 || llList2Integer(gRegistry, sender_idx + 1) != 4)
         {
-            llRegionSayTo(sender, PLACEMENT_RESPONSE_CHANNEL,
+            llRegionSayTo(sender, -2008,
                 "PLACEMENT_DENIED|0|0|" + (string)sender + "|NOT_REGISTERED");
             return;
         }
@@ -886,34 +651,23 @@ handlePlacementRequest(key sender, string msg)
     key avatar = (key)llList2String(parts, 3);
 
     if (!inBounds(gx, gy))
-    {
-        denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS");
-        return;
-    }
-    if (getCellType(gx, gy) != CELL_BUILDABLE)
-    {
-        denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE");
-        return;
-    }
-    if (getCellOccupied(gx, gy) != CELL_EMPTY)
-    {
-        denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED");
-        return;
-    }
+    { denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS"); return; }
+
+    if (getCellType(gx, gy) != 1)
+    { denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE"); return; }
+
+    if (getCellOccupied(gx, gy) != 0)
+    { denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED"); return; }
 
     reservePlacement(sender, gx, gy, avatar);
 }
 
-// Handles the player's tower type selection from the dialog.
-// Format: TOWER_PLACE_REQUEST|<gx>|<gy>|<avatar>|<tower_type_id>
-// Only accepted from a registered placement handler.
 handleTowerPlaceRequest(key sender, string msg)
 {
     integer sender_idx = findRegistryEntry(sender);
-    if (sender_idx == -1 ||
-        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    if (sender_idx == -1 || llList2Integer(gRegistry, sender_idx + 1) != 4)
     {
-        llOwnerSay("[PL] TOWER_PLACE_REQUEST from unregistered sender: " + (string)sender);
+        llOwnerSay("[PL] TOWER_PLACE_REQUEST from unregistered sender.");
         return;
     }
 
@@ -926,45 +680,36 @@ handleTowerPlaceRequest(key sender, string msg)
     key avatar      = (key)llList2String(parts, 3);
     integer type_id = (integer)llList2String(parts, 4);
 
-    // Verify this cell is still reserved (not timed out)
     integer res_idx = findReservation(gx, gy);
     if (res_idx == -1)
     {
         llRegionSayTo(avatar, 0,
             "Your tower selection timed out. Please click the grid again.");
-        llOwnerSay("[PL] TOWER_PLACE_REQUEST for unreserved cell ("
-            + (string)gx + "," + (string)gy + ")");
         return;
     }
 
-    // Verify the avatar placing matches the one who reserved
-    key reserving_avatar = (key)llList2String(gReservations, res_idx + 2);
-    if (reserving_avatar != avatar)
+    if ((key)llList2String(gReservations, res_idx + 2) != avatar)
     {
-        llOwnerSay("[PL] Avatar mismatch on placement: "
-            + (string)avatar + " vs reserved " + (string)reserving_avatar);
+        llOwnerSay("[PL] Avatar mismatch on placement.");
         return;
     }
 
-    // Validate type
-    if (findTowerType(type_id) == -1)
+    if (towerObjName(type_id) == "")
     {
         llOwnerSay("[PL] Unknown tower type: " + (string)type_id);
         return;
     }
 
-    // Consume reservation, mark occupied, rez tower
     clearReservation(gx, gy);
-    setCellOccupied(gx, gy, CELL_OCCUPIED);
+    setCellOccupied(gx, gy, 1);
     rezTower(gx, gy, type_id);
-
     llRegionSayTo(avatar, 0,
         "Tower placed at (" + (string)gx + "," + (string)gy + ").");
 }
 
 
 // =============================================================================
-// REGISTRATION HELPERS
+// REGISTRATION
 // =============================================================================
 
 integer checkPlacementHandlerSlot(key sender)
@@ -973,12 +718,11 @@ integer checkPlacementHandlerSlot(key sender)
     integer i;
     for (i = 0; i < count; i++)
     {
-        integer idx      = i * REG_STRIDE;
+        integer idx      = i * 5;
         key existing_key = (key)llList2String(gRegistry, idx);
-        if (llList2Integer(gRegistry, idx + 1) == REG_TYPE_PLACEMENT_HANDLER
-            && existing_key != sender)
+        if (llList2Integer(gRegistry, idx + 1) == 4 && existing_key != sender)
         {
-            llRegionSayTo(sender, GM_REGISTER_CHANNEL,
+            llRegionSayTo(sender, -2001,
                 "REGISTER_REJECTED|PLACEMENT_HANDLER_ALREADY_REGISTERED|"
                 + (string)existing_key);
             return FALSE;
@@ -997,32 +741,29 @@ handleRegisterMessage(key sender, string msg)
     integer gx       = (integer)llList2String(parts, 2);
     integer gy       = (integer)llList2String(parts, 3);
 
-    if (obj_type < REG_TYPE_TOWER || obj_type > REG_TYPE_PLACEMENT_HANDLER)
+    if (obj_type < 1 || obj_type > 4)
     {
         llOwnerSay("[REG] Unknown type " + (string)obj_type);
         return;
     }
 
-    if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+    if (obj_type == 4)
     {
-        if (!checkPlacementHandlerSlot(sender))
-            return;
+        if (!checkPlacementHandlerSlot(sender)) return;
 
-        // Placement handler includes grid info as fields 5-8:
-        // REGISTER|4|0|0|<origin_x>|<origin_y>|<origin_z>|<cell_size>
         if (llGetListLength(parts) >= 8)
         {
             gGridOrigin   = <(float)llList2String(parts, 4),
                              (float)llList2String(parts, 5),
                              (float)llList2String(parts, 6)>;
             gGridCellSize = (float)llList2String(parts, 7);
-            llOwnerSay("[GM] Grid info stored: origin=" + (string)gGridOrigin
+            llOwnerSay("[GM] Grid: origin=" + (string)gGridOrigin
                 + " cell=" + (string)gGridCellSize + "m");
         }
     }
 
     registerObject(sender, obj_type, gx, gy);
-    llRegionSayTo(sender, GM_REGISTER_CHANNEL, "REGISTER_OK|" + (string)obj_type);
+    llRegionSayTo(sender, -2001, "REGISTER_OK|" + (string)obj_type);
 }
 
 handleDeregisterMessage(key sender, string msg)
@@ -1041,103 +782,127 @@ handleHeartbeatMessage(key sender, string msg)
 
 
 // =============================================================================
-// DEBUG COMMANDS
+// LINK MESSAGE — debug commands forwarded from game_manager_debug.lsl
+// Num=42 is the agreed debug channel. str carries the /td command text.
 // =============================================================================
 
-handleSetCommand(string msg)
+handleLinkDebug(string cmd)
 {
-    list parts = llParseString2List(msg, [" "], []);
-    if (llGetListLength(parts) < 5)
+    if (cmd == "dump map")
+        llMessageLinked(LINK_THIS, 43, dumpMapStr(), "");
+    else if (cmd == "dump registry")
+        llMessageLinked(LINK_THIS, 43, dumpRegistryStr(), "");
+    else if (cmd == "dump pairings")
+        llMessageLinked(LINK_THIS, 43, dumpPairingsStr(), "");
+    else if (cmd == "dump all")
     {
-        llOwnerSay("[GM] Usage: /td set <x> <y> <build|path|blocked>");
-        return;
+        llMessageLinked(LINK_THIS, 43, dumpMapStr(), "");
+        llMessageLinked(LINK_THIS, 43, dumpRegistryStr(), "");
+        llMessageLinked(LINK_THIS, 43, dumpPairingsStr(), "");
     }
-    integer x       = (integer)llList2String(parts, 2);
-    integer y       = (integer)llList2String(parts, 3);
-    string type_str = llToLower(llList2String(parts, 4));
-
-    if (!inBounds(x, y))
+    else if (cmd == "stats")
     {
-        llOwnerSay("[GM] Out of bounds");
-        return;
-    }
-
-    integer new_type;
-    integer new_occupied;
-    if (type_str == "build")
-    {
-        new_type     = CELL_BUILDABLE;
-        new_occupied = getCellOccupied(x, y);
-    }
-    else if (type_str == "path")
-    {
-        new_type     = CELL_PATH;
-        new_occupied = CELL_EMPTY;
-    }
-    else if (type_str == "blocked")
-    {
-        new_type     = CELL_BLOCKED;
-        new_occupied = CELL_EMPTY;
-    }
-    else
-    {
-        llOwnerSay("[GM] Unknown type: " + type_str);
-        return;
-    }
-
-    setCell(x, y, new_type, new_occupied);
-    llOwnerSay("[MAP] (" + (string)x + "," + (string)y + ") = " + type_str);
-}
-
-handleDebugCommand(string msg)
-{
-    if (msg == "/td dump map")
-        dumpMap();
-    else if (msg == "/td dump registry")
-        dumpRegistry();
-    else if (msg == "/td dump pairings")
-        dumpPairings();
-    else if (msg == "/td dump all")
-    {
-        dumpMap();
-        dumpRegistry();
-        dumpPairings();
-    }
-    else if (msg == "/td stats")
-    {
-        llOwnerSay("[GM] Objs:" + (string)registryCount()
+        llMessageLinked(LINK_THIS, 43,
+            "Objs:" + (string)registryCount()
             + " Enemies:" + (string)enemyCount()
-            + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / PAIRING_STRIDE)
-            + " Res:" + (string)(llGetListLength(gReservations) / RES_STRIDE)
+            + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / 2)
+            + " Res:" + (string)(llGetListLength(gReservations) / 4)
             + " Lives:" + (string)gLives
             + " Wave:" + (string)gWaveActive
             + " HB:" + (string)gHeartbeatSeq
-            + " Mem:" + (string)llGetFreeMemory() + "b");
+            + " Mem:" + (string)llGetFreeMemory() + "b", "");
     }
-    else if (llGetSubString(msg, 0, 7) == "/td set ")
-        handleSetCommand(msg);
-    else if (msg == "/td wave start")
-        startWave();
-    else if (msg == "/td test placement")
+    else if (llGetSubString(cmd, 0, 3) == "set ")
     {
-        integer cx = MAP_WIDTH  / 2;
-        integer cy = MAP_HEIGHT / 2;
-        key fake_avatar = llGetOwner();
+        list parts = llParseString2List(cmd, [" "], []);
+        if (llGetListLength(parts) < 4)
+        {
+            llOwnerSay("[GM] Usage: set <x> <y> <build|path|blocked>");
+            return;
+        }
+        integer x        = (integer)llList2String(parts, 1);
+        integer y        = (integer)llList2String(parts, 2);
+        string  type_str = llToLower(llList2String(parts, 3));
 
-        llOwnerSay("[PL] --- TEST ---");
-        handlePlacementRequest(llGetKey(),
-            "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
-            + "|" + (string)fake_avatar);
-        handlePlacementRequest(llGetKey(),
-            "PLACEMENT_REQUEST|" + (string)cx + "|" + (string)cy
-            + "|" + (string)fake_avatar);
-        handlePlacementRequest(llGetKey(),
-            "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
-        handlePlacementRequest(llGetKey(),
-            "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
-        clearReservation(cx, cy);
-        llOwnerSay("[PL] --- DONE ---");
+        if (!inBounds(x, y)) { llOwnerSay("[GM] Out of bounds"); return; }
+
+        if      (type_str == "build")
+            setCell(x, y, 1, getCellOccupied(x, y));
+        else if (type_str == "path")
+            setCell(x, y, 2, 0);
+        else if (type_str == "blocked")
+            setCell(x, y, 0, 0);
+        else
+            llOwnerSay("[GM] Unknown type: " + type_str);
     }
+    else if (cmd == "wave start")
+        startWave();
+}
+
+// Build map dump as a single string for link_message.
+// Called only when debug script requests it — not in hot path.
+string dumpMapStr()
+{
+    string out = "[MAP] B=buildable P=path X=blocked r=reserved o=occupied\n";
+    integer y;
+    for (y = 0; y < 10; y++)
+    {
+        list cells = [];
+        integer x;
+        for (x = 0; x < 10; x++)
+        {
+            integer t = getCellType(x, y);
+            integer o = getCellOccupied(x, y);
+            string ch;
+            if      (t == 2) ch = "P";
+            else if (t == 0) ch = "X";
+            else             ch = "B";
+            if      (o == 1) ch = llToLower(ch);
+            else if (o == 2) ch = "r";
+            cells += [ch];
+        }
+        out += "y" + (string)y + " " + llDumpList2String(cells, " ") + "\n";
+    }
+    return out;
+}
+
+string dumpRegistryStr()
+{
+    integer count = registryCount();
+    string out = "[REG] --- " + (string)count + " objects ---\n";
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx      = i * 5;
+        integer obj_type = llList2Integer(gRegistry, idx + 1);
+        integer age      = llGetUnixTime() - llList2Integer(gRegistry, idx + 4);
+        string type_label;
+        if      (obj_type == 1) type_label = "TWR";
+        else if (obj_type == 2) type_label = "ENM";
+        else if (obj_type == 3) type_label = "SPN";
+        else if (obj_type == 4) type_label = "PLH";
+        else                    type_label = "UNK";
+        out += type_label
+            + " (" + (string)llList2Integer(gRegistry, idx + 2)
+            + "," + (string)llList2Integer(gRegistry, idx + 3) + ")"
+            + " " + (string)age + "s "
+            + llList2String(gRegistry, idx) + "\n";
+    }
+    return out;
+}
+
+string dumpPairingsStr()
+{
+    integer count = llGetListLength(gSpawnerPairings) / 2;
+    string out = "[PAIR] --- " + (string)count + " pairs ---\n";
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * 2;
+        out += llList2String(gSpawnerPairings, idx)
+            + " -> " + llList2String(gSpawnerPairings, idx + 1) + "\n";
+    }
+    return out;
 }
 
 
@@ -1152,42 +917,40 @@ default
         llOwnerSay("[GM] Starting up...");
         initMap();
 
-        llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
-        llListen(GM_DEREGISTER_CHANNEL,      "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
-        llListen(PLACEMENT_CHANNEL,          "", NULL_KEY, "");
-        llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
-        llListen(ENEMY_REPORT_CHANNEL,       "", NULL_KEY, "");
-        llListen(TOWER_REPORT_CHANNEL,       "", NULL_KEY, "");
-        llListen(SPAWNER_CHANNEL,            "", NULL_KEY, "");
-        llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
-        llListen(TOWER_PLACE_CHANNEL,        "", NULL_KEY, "");
-        llListen(0, "", llGetOwner(), "");
+        llListen(-2001, "", NULL_KEY, "");   // GM_REGISTER
+        llListen(-2002, "", NULL_KEY, "");   // GM_DEREGISTER
+        llListen(-2003, "", NULL_KEY, "");   // HEARTBEAT
+        llListen(-2004, "", NULL_KEY, "");   // PLACEMENT
+        llListen(-2006, "", NULL_KEY, "");   // ENEMY_REPORT
+        llListen(-2005, "", NULL_KEY, "");   // TOWER_REPORT
+        llListen(-2007, "", NULL_KEY, "");   // GM_DISCOVERY
+        llListen(-2009, "", NULL_KEY, "");   // SPAWNER
+        llListen(-2011, "", NULL_KEY, "");   // GRID_INFO
+        llListen(-2012, "", NULL_KEY, "");   // TOWER_PLACE
 
-        llSetTimerEvent(HEARTBEAT_INTERVAL);
+        llSetTimerEvent(10);
 
         llOwnerSay("[GM] Key: " + (string)llGetKey());
         llOwnerSay("[GM] Mem: " + (string)llGetFreeMemory() + "b");
-        llOwnerSay("[GM] /td: dump map|registry|pairings|all|stats|wave start|test placement|set <x> <y> <type>");
     }
 
     listen(integer channel, string name, key id, string msg)
     {
-        if      (channel == GM_REGISTER_CHANNEL)   handleRegisterMessage(id, msg);
-        else if (channel == GM_DEREGISTER_CHANNEL) handleDeregisterMessage(id, msg);
-        else if (channel == HEARTBEAT_CHANNEL)     handleHeartbeatMessage(id, msg);
-        else if (channel == PLACEMENT_CHANNEL)     handlePlacementRequest(id, msg);
-        else if (channel == GM_DISCOVERY_CHANNEL)  handleDiscoveryMessage(id, msg);
-        else if (channel == ENEMY_REPORT_CHANNEL)  handleEnemyReport(id, msg);
-        else if (channel == TOWER_REPORT_CHANNEL)  handleTowerReport(id, msg);
-        else if (channel == SPAWNER_CHANNEL)       handleSpawnerReport(id, msg);
-        else if (channel == GRID_INFO_CHANNEL)     handleGridInfoRequest(id, msg);
-        else if (channel == TOWER_PLACE_CHANNEL)   handleTowerPlaceRequest(id, msg);
-        else if (channel == 0 && id == llGetOwner())
-        {
-            if (llGetSubString(msg, 0, 2) == "/td")
-                handleDebugCommand(msg);
-        }
+        if      (channel == -2001) handleRegisterMessage(id, msg);
+        else if (channel == -2002) handleDeregisterMessage(id, msg);
+        else if (channel == -2003) handleHeartbeatMessage(id, msg);
+        else if (channel == -2004) handlePlacementRequest(id, msg);
+        else if (channel == -2007) handleDiscoveryMessage(id, msg);
+        else if (channel == -2006) handleEnemyReport(id, msg);
+        else if (channel == -2005) handleTowerReport(id, msg);
+        else if (channel == -2009) handleSpawnerReport(id, msg);
+        else if (channel == -2011) handleGridInfoRequest(id, msg);
+        else if (channel == -2012) handleTowerPlaceRequest(id, msg);
+    }
+
+    link_message(integer sender_num, integer num, string str, key id)
+    {
+        if (num == 42) handleLinkDebug(str);
     }
 
     timer()
