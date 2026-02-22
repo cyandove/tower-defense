@@ -322,10 +322,8 @@ rezAllObjects()
     llOwnerSay("[CTL] Rezzed GM at " + (string)gm_pos);
 
     // Rez placement handler as a flat prim centred on the grid
-    // Size is MAP_W * CELL_SIZE square, 0.1m thick
-    float grid_extent = MAP_W * CELL_SIZE;
-    vector handler_pos = <gGridOrigin.x + grid_extent * 0.5,
-                          gGridOrigin.y + grid_extent * 0.5,
+    vector handler_pos = <gGridOrigin.x,
+                          gGridOrigin.y,
                           gGridOrigin.z + 0.05>;
     llRezObject(INV_HANDLER, handler_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
     llOwnerSay("[CTL] Rezzed handler at " + (string)handler_pos);
