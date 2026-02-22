@@ -412,7 +412,7 @@ startNextWave()
     llOwnerSay("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
 
     // Tell all registered spawners to start
-    llRegionSayTo(gSpawner_Key, -2009, "WAVE_START|" + (string)count);
+    llRegionSayTo(gSpawner_Key, CTRL, "WAVE_START|" + (string)count);
 }
 
 onLifeLost()

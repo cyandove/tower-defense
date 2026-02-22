@@ -370,6 +370,7 @@ default
             list parts = llParseString2List(msg, ["|"], []);
             string cmd = llList2String(parts, 0);
             if      (cmd == "SPAWNER_CONFIG") handleSpawnerConfig(id, msg);
+            else if (cmd == "WAVE_START")    handleWaveStart(msg);
             else if (cmd == "SHUTDOWN")
             {
                 llOwnerSay("[SP] Shutdown.");
