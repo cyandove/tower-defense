@@ -1,15 +1,24 @@
 // =============================================================================
 // game_manager.lsl
-// Tower Defense Game Manager — Phase 4c (memory optimised)
+// Tower Defense Game Manager — Phase 6
 // =============================================================================
-// MEMORY FIXES:
-//   - initMap(): replaced 100-iteration += loop with 10-chunk append
-//   - dumpMap(): replaced per-character string += with list + llDumpList2String
-//   - receiveHeartbeatAck(): removed stale-ACK llOwnerSay (hot path)
-//   - registerObject() / deregisterObject(): trimmed log strings
-//   - cullStaleObjects(): removed per-cull llOwnerSay, kept summary only
-//   - handleSpawnerReport() HANDLER_QUERY: single log line
-//   - handleEnemyReport() ENEMY_POSITION: no log (fires every second per enemy)
+// PHASE 6 CHANGES:
+//   - Added TOWER_PLACE_CHANNEL = -2012
+//   - Added CELL_RESERVED = 2 occupancy state for two-phase placement flow
+//   - Added RESERVATION_TIMEOUT = 30s; timer now also clears stale reservations
+//   - Added gGridOrigin, gGridCellSize globals; populated from placement handler
+//     registration message (extended to include grid info as fields 5-8)
+//   - Added tower type registry: gTowerTypes strided list [id, obj_name, label]
+//   - Added gridToWorld() for computing rez position from grid coords
+//   - Added rezTower() to rez from GM inventory with type ID as start_param
+//   - Added handleTowerPlaceRequest() on TOWER_PLACE_CHANNEL
+//   - handlePlacementRequest() now reserves cell (CELL_RESERVED) instead of
+//     marking it occupied; sends PLACEMENT_RESERVED response to handler so
+//     the handler knows to show the tower type dialog
+//   - handleRegisterMessage() stores grid info when placement handler registers
+//   - PLACEMENT_RESPONSE_CHANNEL responses: added PLACEMENT_RESERVED variant
+//   - deregisterObject() clears reservation if tower deregisters before placing
+//   - cullStaleObjects() clears reservations for stale placement handlers
 // =============================================================================
 
 
@@ -27,6 +36,7 @@ integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 integer SPAWNER_CHANNEL            = -2009;
 integer ENEMY_CHANNEL              = -2010;
 integer GRID_INFO_CHANNEL          = -2011;
+integer TOWER_PLACE_CHANNEL        = -2012;
 
 
 // -----------------------------------------------------------------------------
@@ -42,6 +52,7 @@ integer CELL_PATH      = 2;
 
 integer CELL_EMPTY    = 0;
 integer CELL_OCCUPIED = 1;
+integer CELL_RESERVED = 2;   // held during tower type selection dialog
 
 
 // -----------------------------------------------------------------------------
@@ -56,6 +67,27 @@ integer REG_TYPE_PLACEMENT_HANDLER = 4;
 
 
 // -----------------------------------------------------------------------------
+// TOWER TYPE REGISTRY
+// Strided list: [type_id, object_name, display_label, ...]
+// object_name must exactly match the prim name in the GM's inventory.
+// type_id is passed as start_param when rezzing — tower uses it to pick notecard.
+// -----------------------------------------------------------------------------
+integer TOWER_TYPE_STRIDE = 3;
+list gTowerTypes = [
+    1, "Tower", "Basic",
+    2, "Tower", "Sniper"
+];
+
+
+// -----------------------------------------------------------------------------
+// RESERVATION TIMEOUT
+// How long a cell stays reserved while the player chooses a tower type.
+// If no TOWER_PLACE_REQUEST arrives within this window, the reservation clears.
+// -----------------------------------------------------------------------------
+integer RESERVATION_TIMEOUT = 30;
+
+
+// -----------------------------------------------------------------------------
 // SPAWNER PAIRING TABLE  [spawner_key, handler_key, ...]
 // -----------------------------------------------------------------------------
 integer PAIRING_STRIDE = 2;
@@ -65,6 +97,13 @@ integer PAIRING_STRIDE = 2;
 // ENEMY POSITION TABLE  [key, pos_x, pos_y, pos_z, timestamp, ...]
 // -----------------------------------------------------------------------------
 integer EP_STRIDE = 5;
+
+
+// -----------------------------------------------------------------------------
+// RESERVATION TABLE  [gx, gy, avatar_key, timestamp, ...]
+// Tracks which cells are currently reserved and by whom.
+// -----------------------------------------------------------------------------
+integer RES_STRIDE = 4;
 
 
 // -----------------------------------------------------------------------------
@@ -81,10 +120,15 @@ list    gMap             = [];
 list    gRegistry        = [];
 list    gEnemyPositions  = [];
 list    gSpawnerPairings = [];
+list    gReservations    = [];   // active cell reservations
 integer gHeartbeatSeq    = 0;
 integer gLives           = 20;
 integer gWaveActive      = FALSE;
-vector  gTargetPosOut    = ZERO_VECTOR;  // out-param for findNearestEnemy
+vector  gTargetPosOut    = ZERO_VECTOR;
+
+// Grid geometry — populated when placement handler registers
+vector  gGridOrigin      = ZERO_VECTOR;
+float   gGridCellSize    = 0.0;
 
 
 // =============================================================================
@@ -132,10 +176,17 @@ integer isPlaceable(integer x, integer y)
     return (getCellType(x, y) == CELL_BUILDABLE && getCellOccupied(x, y) == CELL_EMPTY);
 }
 
+// Converts a grid coordinate to a world-space position at the centre of the cell.
+// Requires gGridOrigin and gGridCellSize to be populated from handler registration.
+vector gridToWorld(integer gx, integer gy)
+{
+    return <gGridOrigin.x + (gx + 0.5) * gGridCellSize,
+            gGridOrigin.y + (gy + 0.5) * gGridCellSize,
+            gGridOrigin.z + 0.5>;   // rez slightly above ground plane
+}
+
 initMap()
 {
-    // Build one row of 10 cells (30 entries) then append it 10 times.
-    // Avoids 100 individual list copies from a single-entry += loop.
     list row = [ 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0,
                  1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0 ];
     gMap = [];
@@ -143,7 +194,6 @@ initMap()
     for (i = 0; i < MAP_HEIGHT; i++)
         gMap += row;
 
-    // Path cells
     setCell(2, 0, CELL_PATH, CELL_EMPTY);
     setCell(2, 1, CELL_PATH, CELL_EMPTY);
     setCell(2, 2, CELL_PATH, CELL_EMPTY);
@@ -165,7 +215,6 @@ initMap()
     setCell(2, 8, CELL_PATH, CELL_EMPTY);
     setCell(2, 9, CELL_PATH, CELL_EMPTY);
 
-    // Blocked cells
     setCell(0, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(1, 0, CELL_BLOCKED, CELL_EMPTY);
     setCell(9, 9, CELL_BLOCKED, CELL_EMPTY);
@@ -176,9 +225,7 @@ initMap()
 
 dumpMap()
 {
-    // Build each row as a list then join once with llDumpList2String.
-    // Avoids repeated string copies from row += ch in a loop.
-    llOwnerSay("[MAP] y=0 is top");
+    llOwnerSay("[MAP] y=0 is top  B=buildable P=path X=blocked r=reserved o=occupied");
     integer y;
     for (y = 0; y < MAP_HEIGHT; y++)
     {
@@ -192,11 +239,149 @@ dumpMap()
             if      (t == CELL_PATH)    ch = "P";
             else if (t == CELL_BLOCKED) ch = "X";
             else                        ch = "B";
-            if (o == CELL_OCCUPIED)     ch = llToLower(ch);
+            if      (o == CELL_OCCUPIED) ch = llToLower(ch);
+            else if (o == CELL_RESERVED) ch = "r";
             cells += [ch];
         }
         llOwnerSay("y" + (string)y + " " + llDumpList2String(cells, " "));
     }
+}
+
+
+// =============================================================================
+// RESERVATION TABLE
+// =============================================================================
+
+// Returns the list index of a reservation for the given cell, or -1.
+integer findReservation(integer gx, integer gy)
+{
+    integer count = llGetListLength(gReservations) / RES_STRIDE;
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * RES_STRIDE;
+        if (llList2Integer(gReservations, idx)     == gx &&
+            llList2Integer(gReservations, idx + 1) == gy)
+            return idx;
+    }
+    return -1;
+}
+
+addReservation(integer gx, integer gy, key avatar)
+{
+    gReservations += [gx, gy, (string)avatar, llGetUnixTime()];
+    setCellOccupied(gx, gy, CELL_RESERVED);
+}
+
+clearReservation(integer gx, integer gy)
+{
+    integer idx = findReservation(gx, gy);
+    if (idx == -1) return;
+    gReservations = llDeleteSubList(gReservations, idx, idx + RES_STRIDE - 1);
+    // Only clear to EMPTY — don't touch if it's now OCCUPIED (tower placed)
+    if (getCellOccupied(gx, gy) == CELL_RESERVED)
+        setCellOccupied(gx, gy, CELL_EMPTY);
+}
+
+// Clears any reservations that have exceeded RESERVATION_TIMEOUT.
+// Called from the heartbeat timer alongside cullStaleObjects().
+cullStaleReservations()
+{
+    integer threshold = llGetUnixTime() - RESERVATION_TIMEOUT;
+    integer count = llGetListLength(gReservations) / RES_STRIDE;
+    integer i = count - 1;
+    integer culled = 0;
+    for (; i >= 0; i--)
+    {
+        integer idx = i * RES_STRIDE;
+        if (llList2Integer(gReservations, idx + 3) < threshold)
+        {
+            integer gx = llList2Integer(gReservations, idx);
+            integer gy = llList2Integer(gReservations, idx + 1);
+            gReservations = llDeleteSubList(gReservations, idx, idx + RES_STRIDE - 1);
+            if (getCellOccupied(gx, gy) == CELL_RESERVED)
+                setCellOccupied(gx, gy, CELL_EMPTY);
+            culled++;
+        }
+    }
+    if (culled > 0)
+        llOwnerSay("[RES] Cleared " + (string)culled + " stale reservation(s).");
+}
+
+
+// =============================================================================
+// TOWER TYPE HELPERS
+// =============================================================================
+
+// Returns the index into gTowerTypes for a given type_id, or -1 if not found.
+integer findTowerType(integer type_id)
+{
+    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * TOWER_TYPE_STRIDE;
+        if (llList2Integer(gTowerTypes, idx) == type_id)
+            return idx;
+    }
+    return -1;
+}
+
+// Returns a list of display labels for all tower types — used by llDialog.
+list getTowerTypeLabels()
+{
+    list labels = [];
+    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
+    integer i;
+    for (i = 0; i < count; i++)
+        labels += [llList2String(gTowerTypes, i * TOWER_TYPE_STRIDE + 2)];
+    return labels;
+}
+
+// Returns the type_id for a given display label, or -1 if not found.
+integer towerTypeFromLabel(string label)
+{
+    integer count = llGetListLength(gTowerTypes) / TOWER_TYPE_STRIDE;
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        integer idx = i * TOWER_TYPE_STRIDE;
+        if (llList2String(gTowerTypes, idx + 2) == label)
+            return llList2Integer(gTowerTypes, idx);
+    }
+    return -1;
+}
+
+// Rezzes a tower from inventory at the world position of the given grid cell.
+// type_id is encoded in start_param so the tower knows which notecard to load.
+rezTower(integer gx, integer gy, integer type_id)
+{
+    if (gGridCellSize == 0.0)
+    {
+        llOwnerSay("[GM] Cannot rez tower — grid info not yet received.");
+        return;
+    }
+
+    integer type_idx = findTowerType(type_id);
+    if (type_idx == -1)
+    {
+        llOwnerSay("[GM] Unknown tower type: " + (string)type_id);
+        return;
+    }
+
+    string obj_name = llList2String(gTowerTypes, type_idx + 1);
+
+    if (llGetInventoryType(obj_name) == INVENTORY_NONE)
+    {
+        llOwnerSay("[GM] Tower object '" + obj_name + "' not in inventory.");
+        return;
+    }
+
+    vector rez_pos = gridToWorld(gx, gy);
+    llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, type_id);
+    llOwnerSay("[GM] Rezzed '" + obj_name + "' type=" + (string)type_id
+        + " at grid (" + (string)gx + "," + (string)gy + ")"
+        + " world=" + (string)rez_pos);
 }
 
 
@@ -240,7 +425,12 @@ deregisterObject(key id)
     if (obj_type == REG_TYPE_SPAWNER)
         removeSpawnerPairing(id);
     if (obj_type == REG_TYPE_PLACEMENT_HANDLER)
+    {
         removePairingsForHandler(id);
+        // Clear any reservations associated with this handler's cells
+        // (belt-and-suspenders — reservations should have timed out already)
+        cullStaleReservations();
+    }
 
     llOwnerSay("[REG] -" + (string)obj_type + " " + (string)id);
 }
@@ -309,7 +499,6 @@ sendHeartbeat()
 
 receiveHeartbeatAck(key id, integer seq)
 {
-    // Silently drop stale ACKs — logging here fires on every enemy every cycle
     if (seq != gHeartbeatSeq) return;
     integer idx = findRegistryEntry(id);
     if (idx == -1) return;
@@ -497,7 +686,6 @@ handleEnemyReport(key sender, string msg)
     if (cmd == "ENEMY_POSITION")
     {
         if (llGetListLength(parts) < 4) return;
-        // No llOwnerSay here — this fires every second per enemy
         upsertEnemyPosition(sender,
             <(float)llList2String(parts, 1),
              (float)llList2String(parts, 2),
@@ -527,10 +715,6 @@ handleEnemyReport(key sender, string msg)
 // TOWER HANDLER
 // =============================================================================
 
-// Finds the nearest enemy to a given position within a given range.
-// Returns the enemy key, or NULL_KEY if none in range.
-// Includes the enemy position in the out-parameters so the GM doesn't need
-// a second lookup when building the TARGET_RESPONSE message.
 key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
 {
     integer count = llGetListLength(gEnemyPositions) / EP_STRIDE;
@@ -554,21 +738,10 @@ key findNearestEnemy(vector tower_pos, float range, vector target_pos_out)
         }
     }
 
-    // LSL doesn't support pass-by-reference, so we smuggle the position
-    // back via a global. Not pretty, but avoids a second list lookup.
     gTargetPosOut = best_pos;
     return best_key;
 }
 
-// handleTowerReport() handles messages from towers on TOWER_REPORT_CHANNEL.
-//
-// TARGET_REQUEST|<pos_x>|<pos_y>|<pos_z>|<range>
-//   Tower asks for the nearest enemy in range.
-//   GM responds with TARGET_RESPONSE|<key>|<pos_x>|<pos_y>|<pos_z>
-//   or TARGET_RESPONSE|NULL_KEY if none found.
-//
-// ENEMY_KILLED|<enemy_key>  (future)
-//   Tower reports a kill for scoring. Not yet handled — placeholder.
 handleTowerReport(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -581,7 +754,7 @@ handleTowerReport(key sender, string msg)
         vector tower_pos = <(float)llList2String(parts, 1),
                             (float)llList2String(parts, 2),
                             (float)llList2String(parts, 3)>;
-        float range      = (float)llList2String(parts, 4);
+        float range = (float)llList2String(parts, 4);
 
         key target_key = findNearestEnemy(tower_pos, range, ZERO_VECTOR);
 
@@ -600,7 +773,6 @@ handleTowerReport(key sender, string msg)
                 + "|" + (string)gTargetPosOut.z);
         }
     }
-    // ENEMY_KILLED handling will go here in a future phase
 }
 
 
@@ -670,12 +842,15 @@ startWave()
 // PLACEMENT VALIDATION
 // =============================================================================
 
-approvePlacement(key handler, integer gx, integer gy, key avatar)
+// Reserves the cell and tells the handler to show the tower type dialog.
+// The cell is marked CELL_RESERVED until the player picks a type or times out.
+reservePlacement(key handler, integer gx, integer gy, key avatar)
 {
-    setCellOccupied(gx, gy, CELL_OCCUPIED);
+    addReservation(gx, gy, avatar);
     llRegionSayTo(handler, PLACEMENT_RESPONSE_CHANNEL,
-        "PLACEMENT_OK|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
-    llOwnerSay("[PL] OK (" + (string)gx + "," + (string)gy + ")");
+        "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
+    llOwnerSay("[PL] Reserved (" + (string)gx + "," + (string)gy
+        + ") for " + llKey2Name(avatar));
 }
 
 denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
@@ -686,6 +861,8 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
     llOwnerSay("[PL] Denied " + reason + " (" + (string)gx + "," + (string)gy + ")");
 }
 
+// Validates cell and reserves it if valid.
+// Called when player touches the placement handler prim.
 handlePlacementRequest(key sender, string msg)
 {
     if (sender != llGetKey())
@@ -718,13 +895,71 @@ handlePlacementRequest(key sender, string msg)
         denyPlacement(sender, gx, gy, avatar, "NOT_BUILDABLE");
         return;
     }
-    if (getCellOccupied(gx, gy) == CELL_OCCUPIED)
+    if (getCellOccupied(gx, gy) != CELL_EMPTY)
     {
         denyPlacement(sender, gx, gy, avatar, "CELL_OCCUPIED");
         return;
     }
 
-    approvePlacement(sender, gx, gy, avatar);
+    reservePlacement(sender, gx, gy, avatar);
+}
+
+// Handles the player's tower type selection from the dialog.
+// Format: TOWER_PLACE_REQUEST|<gx>|<gy>|<avatar>|<tower_type_id>
+// Only accepted from a registered placement handler.
+handleTowerPlaceRequest(key sender, string msg)
+{
+    integer sender_idx = findRegistryEntry(sender);
+    if (sender_idx == -1 ||
+        llList2Integer(gRegistry, sender_idx + 1) != REG_TYPE_PLACEMENT_HANDLER)
+    {
+        llOwnerSay("[PL] TOWER_PLACE_REQUEST from unregistered sender: " + (string)sender);
+        return;
+    }
+
+    list parts = llParseString2List(msg, ["|"], []);
+    if (llGetListLength(parts) < 5) return;
+    if (llList2String(parts, 0) != "TOWER_PLACE_REQUEST") return;
+
+    integer gx      = (integer)llList2String(parts, 1);
+    integer gy      = (integer)llList2String(parts, 2);
+    key avatar      = (key)llList2String(parts, 3);
+    integer type_id = (integer)llList2String(parts, 4);
+
+    // Verify this cell is still reserved (not timed out)
+    integer res_idx = findReservation(gx, gy);
+    if (res_idx == -1)
+    {
+        llRegionSayTo(avatar, 0,
+            "Your tower selection timed out. Please click the grid again.");
+        llOwnerSay("[PL] TOWER_PLACE_REQUEST for unreserved cell ("
+            + (string)gx + "," + (string)gy + ")");
+        return;
+    }
+
+    // Verify the avatar placing matches the one who reserved
+    key reserving_avatar = (key)llList2String(gReservations, res_idx + 2);
+    if (reserving_avatar != avatar)
+    {
+        llOwnerSay("[PL] Avatar mismatch on placement: "
+            + (string)avatar + " vs reserved " + (string)reserving_avatar);
+        return;
+    }
+
+    // Validate type
+    if (findTowerType(type_id) == -1)
+    {
+        llOwnerSay("[PL] Unknown tower type: " + (string)type_id);
+        return;
+    }
+
+    // Consume reservation, mark occupied, rez tower
+    clearReservation(gx, gy);
+    setCellOccupied(gx, gy, CELL_OCCUPIED);
+    rezTower(gx, gy, type_id);
+
+    llRegionSayTo(avatar, 0,
+        "Tower placed at (" + (string)gx + "," + (string)gy + ").");
 }
 
 
@@ -772,6 +1007,18 @@ handleRegisterMessage(key sender, string msg)
     {
         if (!checkPlacementHandlerSlot(sender))
             return;
+
+        // Placement handler includes grid info as fields 5-8:
+        // REGISTER|4|0|0|<origin_x>|<origin_y>|<origin_z>|<cell_size>
+        if (llGetListLength(parts) >= 8)
+        {
+            gGridOrigin   = <(float)llList2String(parts, 4),
+                             (float)llList2String(parts, 5),
+                             (float)llList2String(parts, 6)>;
+            gGridCellSize = (float)llList2String(parts, 7);
+            llOwnerSay("[GM] Grid info stored: origin=" + (string)gGridOrigin
+                + " cell=" + (string)gGridCellSize + "m");
+        }
     }
 
     registerObject(sender, obj_type, gx, gy);
@@ -861,6 +1108,7 @@ handleDebugCommand(string msg)
         llOwnerSay("[GM] Objs:" + (string)registryCount()
             + " Enemies:" + (string)enemyCount()
             + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / PAIRING_STRIDE)
+            + " Res:" + (string)(llGetListLength(gReservations) / RES_STRIDE)
             + " Lives:" + (string)gLives
             + " Wave:" + (string)gWaveActive
             + " HB:" + (string)gHeartbeatSeq
@@ -887,7 +1135,7 @@ handleDebugCommand(string msg)
             "PLACEMENT_REQUEST|2|0|" + (string)fake_avatar);
         handlePlacementRequest(llGetKey(),
             "PLACEMENT_REQUEST|0|0|" + (string)fake_avatar);
-        setCellOccupied(cx, cy, CELL_EMPTY);
+        clearReservation(cx, cy);
         llOwnerSay("[PL] --- DONE ---");
     }
 }
@@ -913,6 +1161,7 @@ default
         llListen(TOWER_REPORT_CHANNEL,       "", NULL_KEY, "");
         llListen(SPAWNER_CHANNEL,            "", NULL_KEY, "");
         llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
+        llListen(TOWER_PLACE_CHANNEL,        "", NULL_KEY, "");
         llListen(0, "", llGetOwner(), "");
 
         llSetTimerEvent(HEARTBEAT_INTERVAL);
@@ -933,6 +1182,7 @@ default
         else if (channel == TOWER_REPORT_CHANNEL)  handleTowerReport(id, msg);
         else if (channel == SPAWNER_CHANNEL)       handleSpawnerReport(id, msg);
         else if (channel == GRID_INFO_CHANNEL)     handleGridInfoRequest(id, msg);
+        else if (channel == TOWER_PLACE_CHANNEL)   handleTowerPlaceRequest(id, msg);
         else if (channel == 0 && id == llGetOwner())
         {
             if (llGetSubString(msg, 0, 2) == "/td")
@@ -944,5 +1194,6 @@ default
     {
         sendHeartbeat();
         cullStaleObjects();
+        cullStaleReservations();
     }
 }

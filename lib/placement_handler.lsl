@@ -1,32 +1,29 @@
 // =============================================================================
 // placement_handler.lsl
-// Tower Defense Placement Handler — Phase 4b
-// Adds: GRID_INFO_CHANNEL listener, responds to grid info requests from GM
+// Tower Defense Placement Handler — Phase 6
 // =============================================================================
-// PHASE 4b CHANGES:
-//   - Added GRID_INFO_CHANNEL = -2011 listener
-//   - Handles GRID_INFO_REQUEST forwarded by the GM from a spawner
-//   - Responds directly to the requesting spawner with GRID_INFO message
-//   - gGridOrigin and gCellSize already derived dynamically — no changes needed
-// =============================================================================
+// PHASE 6 CHANGES:
+//   - Registration message extended to include grid origin and cell size so the
+//     GM can store grid geometry for tower rezzing:
+//       REGISTER|4|0|0|<origin_x>|<origin_y>|<origin_z>|<cell_size>
+//   - Touch flow changed from single-step to two-step:
+//       Step 1: Send PLACEMENT_REQUEST to GM for cell validation
+//       Step 2: On PLACEMENT_RESERVED, show llDialog tower type menu to avatar
+//   - On dialog response: forward TOWER_PLACE_REQUEST to GM on TOWER_PLACE_CHANNEL
+//   - Added TOWER_PLACE_CHANNEL = -2012
+//   - Added gPendingDialogs list to track open dialogs: [avatar_key, gx, gy, ...]
+//   - Dialog listen uses a filtered handle per avatar; handle stored alongside
+//     pending entry and closed after response or timeout
+//   - DIALOG_TIMEOUT = 30s matches GM reservation timeout
 //
-// SETUP INSTRUCTIONS:
-//   1. Create a flat box prim sized to cover your entire grid in meters.
-//      Example: if MAP_WIDTH=10 and MAP_HEIGHT=10, make the prim 20x20m for
-//      2m cells, or 10x10m for 1m cells. The script derives cell size from
-//      the prim's scale automatically — just keep the prim square.
-//   2. Center the prim over your playfield. Grid origin and cell size are
-//      calculated from the prim's position and scale at startup — no manual
-//      coordinate entry needed. Move the prim and reset the script to update.
-//   3. Set the prim transparent (alpha=0) but leave it phantom OFF so
-//      clicks register. Alternatively set alpha to ~5% during testing.
-//   4. Edit MAP_WIDTH, MAP_HEIGHT, and TOP_FACE below if needed.
-//   5. The prim must be axis-aligned (no rotation) for the default math.
+// SETUP:
+//   Same as before — flat box prim sized to cover the grid, transparent,
+//   phantom OFF. No additional configuration needed.
 // =============================================================================
 
 
 // -----------------------------------------------------------------------------
-// CHANNEL CONSTANTS — must match game_manager.lsl exactly.
+// CHANNEL CONSTANTS — must match game_manager.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL        = -2001;
 integer GM_DEREGISTER_CHANNEL      = -2002;
@@ -35,12 +32,11 @@ integer PLACEMENT_CHANNEL          = -2004;
 integer GM_DISCOVERY_CHANNEL       = -2007;
 integer PLACEMENT_RESPONSE_CHANNEL = -2008;
 integer GRID_INFO_CHANNEL          = -2011;
+integer TOWER_PLACE_CHANNEL        = -2012;
 
 
 // -----------------------------------------------------------------------------
 // GRID CONFIGURATION
-// Only MAP_WIDTH, MAP_HEIGHT, and TOP_FACE need to be set manually.
-// Cell size and grid origin are derived from the prim's scale and position.
 // -----------------------------------------------------------------------------
 integer MAP_WIDTH  = 10;
 integer MAP_HEIGHT = 10;
@@ -48,6 +44,24 @@ integer TOP_FACE   = 1;
 
 integer DISCOVERY_RETRY_INTERVAL   = 5;
 integer REG_TYPE_PLACEMENT_HANDLER = 4;
+
+// How long to wait for a dialog response before cleaning up the pending entry.
+// Should match RESERVATION_TIMEOUT in game_manager.lsl.
+integer DIALOG_TIMEOUT = 30;
+
+// llDialog channel — negative, derived from prim key to avoid collisions
+// between multiple placement handler instances (there should only be one,
+// but this is good practice).
+integer gDialogChannel;
+
+
+// -----------------------------------------------------------------------------
+// PENDING DIALOG TABLE
+// Tracks avatars who have been shown the tower type dialog but haven't
+// responded yet. Strided list: [avatar_key, gx, gy, listen_handle, timestamp]
+// -----------------------------------------------------------------------------
+integer DIALOG_STRIDE = 5;
+list    gPendingDialogs = [];
 
 
 // -----------------------------------------------------------------------------
@@ -58,6 +72,16 @@ float   gCellSize;
 key     gGM_KEY      = NULL_KEY;
 integer gRegistered  = FALSE;
 integer gDiscovering = FALSE;
+
+// Tower type labels — must match gTowerTypes in game_manager.lsl.
+// Used to populate the llDialog buttons and to map the response back to a type_id.
+// Index in this list + 1 = type_id (1-based to match GM registry).
+list TOWER_LABELS = ["Basic", "Sniper"];
+
+
+// =============================================================================
+// GRID INITIALISATION
+// =============================================================================
 
 initGridFromPrim()
 {
@@ -70,9 +94,9 @@ initGridFromPrim()
 }
 
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // GM DISCOVERY AND REGISTRATION
-// -----------------------------------------------------------------------------
+// =============================================================================
 
 discoverGM()
 {
@@ -86,8 +110,14 @@ handleGMHere(key gm_key)
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
     llOwnerSay("[PH] Found GM: " + (string)gGM_KEY);
+
+    // Extended registration — include grid geometry so GM can rez towers
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
-        "REGISTER|" + (string)REG_TYPE_PLACEMENT_HANDLER + "|0|0");
+        "REGISTER|" + (string)REG_TYPE_PLACEMENT_HANDLER + "|0|0"
+        + "|" + (string)gGridOrigin.x
+        + "|" + (string)gGridOrigin.y
+        + "|" + (string)gGridOrigin.z
+        + "|" + (string)gCellSize);
 }
 
 handleRegisterResponse(string msg)
@@ -98,13 +128,12 @@ handleRegisterResponse(string msg)
     {
         gRegistered = TRUE;
         llSetTimerEvent(0);
-        llOwnerSay("[PH] Registered with GM successfully.");
+        llOwnerSay("[PH] Registered with GM.");
     }
     else if (cmd == "REGISTER_REJECTED")
     {
         gRegistered = FALSE;
-        string reason = llList2String(parts, 1);
-        llOwnerSay("[PH] Registration rejected: " + reason);
+        llOwnerSay("[PH] Registration rejected: " + llList2String(parts, 1));
         llSetTimerEvent(0);
     }
 }
@@ -117,49 +146,33 @@ handleHeartbeat(string msg)
 }
 
 
-// -----------------------------------------------------------------------------
-// GRID INFO RESPONSE  (phase 4b)
-// -----------------------------------------------------------------------------
+// =============================================================================
+// GRID INFO RESPONSE
+// =============================================================================
 
-// Handles a GRID_INFO_REQUEST forwarded by the GM on behalf of a spawner.
-// The GM strips its own wrapper and sends us: GRID_INFO_REQUEST|<spawner_key>
-// We respond directly to the spawner with our derived grid values.
-//
-// Response format: GRID_INFO|<origin_x>|<origin_y>|<origin_z>|<cell_size>
 handleGridInfoRequest(key sender, string msg)
 {
-    // Only accept grid info requests forwarded from the GM
-    if (sender != gGM_KEY)
-    {
-        llOwnerSay("[PH] Ignoring GRID_INFO_REQUEST from non-GM sender: "
-            + (string)sender);
-        return;
-    }
+    if (sender != gGM_KEY) return;
 
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 2)
-    {
-        llOwnerSay("[PH] Malformed GRID_INFO_REQUEST: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 2) return;
 
     key spawner_key = (key)llList2String(parts, 1);
 
-    string response = "GRID_INFO"
+    llRegionSayTo(spawner_key, GRID_INFO_CHANNEL,
+        "GRID_INFO"
         + "|" + (string)gGridOrigin.x
         + "|" + (string)gGridOrigin.y
         + "|" + (string)gGridOrigin.z
-        + "|" + (string)gCellSize;
+        + "|" + (string)gCellSize);
 
-    llRegionSayTo(spawner_key, GRID_INFO_CHANNEL, response);
-    llOwnerSay("[PH] Sent grid info to spawner " + (string)spawner_key
-        + " origin=" + (string)gGridOrigin + " cell_size=" + (string)gCellSize);
+    llOwnerSay("[PH] Sent grid info to " + (string)spawner_key);
 }
 
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // GRID TRANSLATION
-// -----------------------------------------------------------------------------
+// =============================================================================
 
 vector translateToGrid(vector touch_pos)
 {
@@ -171,9 +184,7 @@ vector translateToGrid(vector touch_pos)
 
     if (grid_x < 0 || grid_x >= MAP_WIDTH ||
         grid_y < 0 || grid_y >= MAP_HEIGHT)
-    {
         return <-1.0, -1.0, 0.0>;
-    }
 
     return <(float)grid_x, (float)grid_y, 0.0>;
 }
@@ -184,69 +195,141 @@ string gridStr(vector g)
 }
 
 
-// -----------------------------------------------------------------------------
-// GM COMMUNICATION
-// -----------------------------------------------------------------------------
+// =============================================================================
+// PENDING DIALOG TABLE
+// =============================================================================
 
-sendPlacementRequest(integer grid_x, integer grid_y, key avatar)
+integer findPendingDialog(key avatar)
 {
-    if (!gRegistered)
+    return llListFindList(gPendingDialogs, [(string)avatar]);
+}
+
+addPendingDialog(key avatar, integer gx, integer gy, integer listen_handle)
+{
+    // Remove any existing pending dialog for this avatar first
+    removePendingDialog(avatar);
+    gPendingDialogs += [(string)avatar, gx, gy, listen_handle, llGetUnixTime()];
+}
+
+removePendingDialog(key avatar)
+{
+    integer idx = findPendingDialog(avatar);
+    if (idx == -1) return;
+    // Close the listen handle before removing
+    llListenRemove(llList2Integer(gPendingDialogs, idx + 3));
+    gPendingDialogs = llDeleteSubList(gPendingDialogs, idx, idx + DIALOG_STRIDE - 1);
+}
+
+cullStaleDialogs()
+{
+    integer threshold = llGetUnixTime() - DIALOG_TIMEOUT;
+    integer count = llGetListLength(gPendingDialogs) / DIALOG_STRIDE;
+    integer i = count - 1;
+    for (; i >= 0; i--)
     {
-        llOwnerSay("[PH] Not yet registered — placement request dropped.");
+        integer idx = i * DIALOG_STRIDE;
+        if (llList2Integer(gPendingDialogs, idx + 4) < threshold)
+        {
+            llListenRemove(llList2Integer(gPendingDialogs, idx + 3));
+            gPendingDialogs = llDeleteSubList(gPendingDialogs,
+                idx, idx + DIALOG_STRIDE - 1);
+        }
+    }
+}
+
+
+// =============================================================================
+// TOWER TYPE DIALOG
+// =============================================================================
+
+// Converts a tower label (dialog button text) to the type_id the GM expects.
+// type_id = index in TOWER_LABELS + 1 (1-based).
+integer labelToTypeId(string label)
+{
+    integer idx = llListFindList(TOWER_LABELS, [label]);
+    if (idx == -1) return -1;
+    return idx + 1;
+}
+
+// Shows the tower selection dialog to the avatar and registers a listen handle.
+showTowerDialog(key avatar, integer gx, integer gy)
+{
+    string prompt = "Select tower type for grid ("
+        + (string)gx + "," + (string)gy + ").\n"
+        + "Selection expires in " + (string)DIALOG_TIMEOUT + "s.";
+
+    integer handle = llListen(gDialogChannel, "", avatar, "");
+    llDialog(avatar, prompt, TOWER_LABELS, gDialogChannel);
+    addPendingDialog(avatar, gx, gy, handle);
+
+    llOwnerSay("[PH] Dialog sent to " + llKey2Name(avatar)
+        + " for grid (" + (string)gx + "," + (string)gy + ")");
+}
+
+// Called when the avatar responds to the dialog.
+handleDialogResponse(key avatar, string response)
+{
+    integer idx = findPendingDialog(avatar);
+    if (idx == -1) return;   // not a pending dialog — ignore
+
+    integer gx = llList2Integer(gPendingDialogs, idx + 1);
+    integer gy = llList2Integer(gPendingDialogs, idx + 2);
+
+    integer type_id = labelToTypeId(response);
+    if (type_id == -1)
+    {
+        llOwnerSay("[PH] Unknown tower label '" + response + "' from "
+            + llKey2Name(avatar) + " — ignoring.");
+        removePendingDialog(avatar);
         return;
     }
 
-    string msg = "PLACEMENT_REQUEST"
-        + "|" + (string)grid_x
-        + "|" + (string)grid_y
-        + "|" + (string)avatar;
+    removePendingDialog(avatar);   // closes listen handle
 
-    llRegionSayTo(gGM_KEY, PLACEMENT_CHANNEL, msg);
+    llOwnerSay("[PH] " + llKey2Name(avatar) + " chose type " + (string)type_id
+        + " (" + response + ") for grid (" + (string)gx + "," + (string)gy + ")");
+
+    llRegionSayTo(gGM_KEY, TOWER_PLACE_CHANNEL,
+        "TOWER_PLACE_REQUEST"
+        + "|" + (string)gx
+        + "|" + (string)gy
+        + "|" + (string)avatar
+        + "|" + (string)type_id);
 }
 
 
-// -----------------------------------------------------------------------------
+// =============================================================================
 // PLACEMENT RESPONSE HANDLER
-// -----------------------------------------------------------------------------
-
-string reasonToMessage(string reason)
-{
-    if (reason == "NOT_BUILDABLE") return "You can't build there.";
-    if (reason == "CELL_OCCUPIED") return "That spot is already occupied.";
-    if (reason == "OUT_OF_BOUNDS") return "That location is outside the play area.";
-    if (reason == "NOT_REGISTERED") return "Placement system error — handler not registered.";
-    return "Placement denied (" + reason + ").";
-}
+// =============================================================================
 
 handlePlacementResponse(string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
     string cmd = llList2String(parts, 0);
 
-    if (llGetListLength(parts) < 4)
-    {
-        llOwnerSay("[PH] Malformed placement response: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 4) return;
 
     integer gx = (integer)llList2String(parts, 1);
     integer gy = (integer)llList2String(parts, 2);
     key avatar = (key)llList2String(parts, 3);
 
-    if (cmd == "PLACEMENT_OK")
+    if (cmd == "PLACEMENT_RESERVED")
     {
-        llRegionSayTo(avatar, 0,
-            "Tower placed at grid (" + (string)gx + "," + (string)gy + ").");
-        llOwnerSay("[PH] PLACEMENT_OK -> " + llKey2Name(avatar)
-            + " at (" + (string)gx + "," + (string)gy + ")");
+        // Cell is valid and reserved — show tower type dialog
+        showTowerDialog(avatar, gx, gy);
     }
     else if (cmd == "PLACEMENT_DENIED")
     {
         string reason = llList2String(parts, 4);
-        llRegionSayTo(avatar, 0, reasonToMessage(reason));
-        llOwnerSay("[PH] PLACEMENT_DENIED (" + reason + ") -> "
-            + llKey2Name(avatar)
-            + " at (" + (string)gx + "," + (string)gy + ")");
+        string human_reason;
+        if      (reason == "NOT_BUILDABLE")  human_reason = "You can't build there.";
+        else if (reason == "CELL_OCCUPIED")  human_reason = "That spot is already taken.";
+        else if (reason == "OUT_OF_BOUNDS")  human_reason = "That's outside the play area.";
+        else if (reason == "NOT_REGISTERED") human_reason = "Placement system error.";
+        else                                 human_reason = "Placement denied (" + reason + ").";
+        llRegionSayTo(avatar, 0, human_reason);
+        llOwnerSay("[PH] Denied (" + reason + ") for "
+            + llKey2Name(avatar) + " at (" + (string)gx + "," + (string)gy + ")");
     }
     else
     {
@@ -265,20 +348,21 @@ default
     {
         initGridFromPrim();
 
+        // Derive a stable dialog channel from this prim's key.
+        // llAbs ensures it's positive; we negate it to keep it private.
+        gDialogChannel = -(integer)("0x" + llGetSubString((string)llGetKey(), 0, 6));
+
         llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
         llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
         llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
         llListen(PLACEMENT_RESPONSE_CHANNEL, "", NULL_KEY, "");
         llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
+        // Note: per-avatar dialog listens are opened dynamically in showTowerDialog()
 
         llOwnerSay("[PH] Placement handler ready.");
-        llOwnerSay("[PH] Prim position: " + (string)llGetPos());
-        llOwnerSay("[PH] Prim scale:    " + (string)llGetScale());
-        llOwnerSay("[PH] Grid origin:   " + (string)gGridOrigin);
-        llOwnerSay("[PH] Cell size:     " + (string)gCellSize + "m");
-        llOwnerSay("[PH] Grid:          " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT
-            + " (" + (string)((integer)(gCellSize * MAP_WIDTH)) + "x"
-            + (string)((integer)(gCellSize * MAP_HEIGHT)) + "m total)");
+        llOwnerSay("[PH] Grid origin: " + (string)gGridOrigin);
+        llOwnerSay("[PH] Cell size:   " + (string)gCellSize + "m");
+        llOwnerSay("[PH] Grid:        " + (string)MAP_WIDTH + "x" + (string)MAP_HEIGHT);
 
         discoverGM();
         llSetTimerEvent(DISCOVERY_RETRY_INTERVAL);
@@ -304,23 +388,23 @@ default
         {
             handlePlacementResponse(msg);
         }
-        else if (channel == GRID_INFO_CHANNEL)
+        else if (channel == GRID_INFO_CHANNEL && id == gGM_KEY)
         {
             list parts = llParseString2List(msg, ["|"], []);
             if (llList2String(parts, 0) == "GRID_INFO_REQUEST")
                 handleGridInfoRequest(id, msg);
+        }
+        else if (channel == gDialogChannel)
+        {
+            // Dialog response from an avatar — id is the avatar's key
+            handleDialogResponse(id, msg);
         }
     }
 
     touch_start(integer num_detected)
     {
         integer face = llDetectedTouchFace(0);
-        if (face != TOP_FACE)
-        {
-            llOwnerSay("[PH] Touch on face " + (string)face + " ignored (expected "
-                + (string)TOP_FACE + ")");
-            return;
-        }
+        if (face != TOP_FACE) return;
 
         key avatar       = llDetectedKey(0);
         vector touch_pos = llDetectedTouchPos(0);
@@ -335,19 +419,36 @@ default
         integer grid_x = (integer)grid.x;
         integer grid_y = (integer)grid.y;
 
-        llOwnerSay("[PH] Touch by " + llKey2Name(avatar)
-            + " at " + (string)touch_pos
-            + " -> grid " + gridStr(grid));
+        if (!gRegistered)
+        {
+            llRegionSayTo(avatar, 0, "Tower placement is not ready yet.");
+            return;
+        }
 
-        sendPlacementRequest(grid_x, grid_y, avatar);
+        llOwnerSay("[PH] Touch by " + llKey2Name(avatar)
+            + " -> grid (" + (string)grid_x + "," + (string)grid_y + ")");
+
+        // Step 1: ask GM to validate and reserve the cell
+        llRegionSayTo(gGM_KEY, PLACEMENT_CHANNEL,
+            "PLACEMENT_REQUEST"
+            + "|" + (string)grid_x
+            + "|" + (string)grid_y
+            + "|" + (string)avatar);
     }
 
     timer()
     {
-        if (!gRegistered && gDiscovering)
-            discoverGM();
-        else if (gGM_KEY != NULL_KEY && !gRegistered)
-            handleGMHere(gGM_KEY);
+        if (!gRegistered)
+        {
+            if (gDiscovering || gGM_KEY == NULL_KEY)
+                discoverGM();
+            else
+                handleGMHere(gGM_KEY);
+            return;
+        }
+
+        // Registered — periodic cleanup of stale dialog entries
+        cullStaleDialogs();
     }
 
     on_rez(integer start_param)

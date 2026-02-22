@@ -1,36 +1,40 @@
 // =============================================================================
 // tower_basic.lsl
-// Tower Defense — Basic Tower, Phase 5b
-// Adds: automatic grid coordinate detection from placement handler
+// Tower Defense — Basic Tower, Phase 6
 // =============================================================================
-// OVERVIEW:
-//   Registers with the GM, then on each attack cycle queries the GM for the
-//   nearest enemy in range. On a valid target, rolls hit chance with range
-//   falloff and sends TAKE_DAMAGE directly to the enemy if it hits.
+// PHASE 6 CHANGES:
+//   - Notecard config loaded before GM discovery and registration
+//   - start_param encodes tower type ID, which maps to a notecard name
+//   - All tuning constants (damage, range, accuracy, etc.) are now globals
+//     populated from the notecard — no recompile needed to change tower stats
+//   - Added loading state: tower idles until notecard is fully parsed
+//   - Notecard format: key=value per line, # for comments, blank lines ignored
+//   - Supported keys: damage, range, accuracy, falloff, attack_interval,
+//     targeting_strategy, tower_type_name
+//
+// NOTECARD SETUP:
+//   Create a notecard in the tower prim's inventory named to match the entry
+//   in NOTECARD_NAMES below for the tower's type ID. Example:
+//
+//   Notecard name: "tower_basic.cfg"
+//   Contents:
+//     # Basic Tower config
+//     tower_type_name=Basic Tower
+//     damage=25.0
+//     range=10.0
+//     accuracy=0.85
+//     falloff=0.4
+//     attack_interval=2.0
+//     targeting_strategy=0
 //
 // STARTUP SEQUENCE:
-//   1. Discover GM
-//   2. Query GM for placement handler key (HANDLER_QUERY)
-//   3. Request grid info from handler via GM (GRID_INFO_REQUEST)
-//   4. Derive grid coords from world position + grid origin + cell size
-//   5. Register with GM using correct grid coords
-//   6. Begin attack cycle
-//
-// TARGETING STRATEGY:
-//   Currently "nearest". pickTarget() is isolated so switching strategies
-//   (first-in-path, lowest-health, etc.) only requires changing that function.
-//
-// HIT PROBABILITY MODEL:
-//   hit_chance = ACCURACY * (1.0 - (dist / TOWER_RANGE) * FALLOFF)
-//   At point-blank: ACCURACY          (default 0.85)
-//   At max range:   ACCURACY * 0.6    (default 0.51)
-//   Roll: llFrand(1.0) < hit_chance
-//
-// SETUP:
-//   1. Rez a prim on a buildable grid cell
-//   2. Add this script — no configuration needed
-//   3. Script discovers GM, derives its own grid position, and registers
-//   4. Tower begins attacking automatically once enemies are present
+//   1. Load notecard (type ID from start_param → notecard name)
+//   2. Discover GM
+//   3. Query GM for placement handler key (HANDLER_QUERY)
+//   4. Request grid info from handler via GM (GRID_INFO_REQUEST)
+//   5. Derive grid coords from world position
+//   6. Register with GM
+//   7. Begin attack cycle
 // =============================================================================
 
 
@@ -48,33 +52,27 @@ integer GRID_INFO_CHANNEL     = -2011;
 
 
 // -----------------------------------------------------------------------------
-// TOWER CONFIGURATION
-// Adjust these to tune feel. Move to notecard later for per-instance config.
+// TOWER TYPE → NOTECARD NAME MAP
+// Index corresponds to type_id - 1 (type_id is 1-based).
+// Add an entry here whenever a new tower type is added to the GM's type registry.
 // -----------------------------------------------------------------------------
+list NOTECARD_NAMES = ["tower_basic.cfg", "tower_sniper.cfg"];
 
-// How often the tower attempts to fire, in seconds.
-float ATTACK_INTERVAL = 2.0;
+integer REG_TYPE_TOWER   = 1;
+integer RETRY_INTERVAL   = 5;
+integer LOAD_RETRY_DELAY = 2;   // seconds between notecard line requests on error
 
-// Maximum targeting range in metres.
-float TOWER_RANGE = 10.0;
 
-// Base hit probability at point-blank range (0.0–1.0).
-float ACCURACY = 0.85;
-
-// How much accuracy degrades across the full range.
-// hit_chance = ACCURACY * (1.0 - (dist/TOWER_RANGE) * FALLOFF)
-// 0.0 = no falloff, 1.0 = zero accuracy at max range.
-float FALLOFF = 0.4;
-
-// Damage dealt per successful hit.
-float DAMAGE = 25.0;
-
-// Targeting strategy identifier — passed to pickTarget() for future expansion.
-// 0 = nearest (only strategy implemented in phase 5)
-integer TARGETING_STRATEGY = 0;
-
-integer RETRY_INTERVAL = 5;
-integer REG_TYPE_TOWER = 1;
+// -----------------------------------------------------------------------------
+// TOWER STATS — populated from notecard, defaults used if key missing
+// -----------------------------------------------------------------------------
+string  gTowerTypeName      = "Tower";
+float   gDamage             = 25.0;
+float   gTowerRange         = 10.0;
+float   gAccuracy           = 0.85;
+float   gFalloff            = 0.4;
+float   gAttackInterval     = 2.0;
+integer gTargetingStrategy  = 0;
 
 
 // -----------------------------------------------------------------------------
@@ -87,13 +85,99 @@ integer gDiscovering   = FALSE;
 integer gGridInfoReady = FALSE;
 vector  gTowerPos      = ZERO_VECTOR;
 
-// Derived from GRID_INFO
 vector  gGridOrigin    = ZERO_VECTOR;
-float   gCellSize      = 2.0;
-
-// Derived grid position — computed once grid info arrives
+float   gGridCellSize  = 2.0;
 integer gGridX         = 0;
 integer gGridY         = 0;
+
+// Notecard loading state
+integer gTowerTypeId   = 1;       // set from start_param on rez
+string  gNotecardName  = "";
+key     gNotecardQuery = NULL_KEY;
+integer gCurrentLine   = 0;
+integer gConfigLoaded  = FALSE;
+
+
+// =============================================================================
+// NOTECARD LOADING
+// =============================================================================
+
+// Maps a type_id to a notecard name. Returns "" if type_id is out of range.
+string notecardForType(integer type_id)
+{
+    integer idx = type_id - 1;   // convert to 0-based
+    if (idx < 0 || idx >= llGetListLength(NOTECARD_NAMES))
+        return "";
+    return llList2String(NOTECARD_NAMES, idx);
+}
+
+startNotecardLoad()
+{
+    gNotecardName = notecardForType(gTowerTypeId);
+
+    if (gNotecardName == "")
+    {
+        llOwnerSay("[TW] No notecard defined for type " + (string)gTowerTypeId
+            + ". Using defaults.");
+        gConfigLoaded = TRUE;
+        afterConfigLoaded();
+        return;
+    }
+
+    if (llGetInventoryType(gNotecardName) == INVENTORY_NONE)
+    {
+        llOwnerSay("[TW] Notecard '" + gNotecardName + "' not found. Using defaults.");
+        gConfigLoaded = TRUE;
+        afterConfigLoaded();
+        return;
+    }
+
+    llOwnerSay("[TW] Loading config from '" + gNotecardName + "'...");
+    gCurrentLine   = 0;
+    gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
+}
+
+// Parses a single notecard line and updates the appropriate global.
+// Returns TRUE if the line contained a recognised key.
+integer parseConfigLine(string line)
+{
+    // Strip leading/trailing whitespace (LSL has no trim — approximate with split)
+    if (line == "" || llGetSubString(line, 0, 0) == "#")
+        return FALSE;
+
+    integer eq = llSubStringIndex(line, "=");
+    if (eq == -1) return FALSE;
+
+    string k = llToLower(llGetSubString(line, 0, eq - 1));
+    string v = llGetSubString(line, eq + 1, -1);
+
+    if      (k == "tower_type_name")    gTowerTypeName     = v;
+    else if (k == "damage")             gDamage            = (float)v;
+    else if (k == "range")              gTowerRange        = (float)v;
+    else if (k == "accuracy")           gAccuracy          = (float)v;
+    else if (k == "falloff")            gFalloff           = (float)v;
+    else if (k == "attack_interval")    gAttackInterval    = (float)v;
+    else if (k == "targeting_strategy") gTargetingStrategy = (integer)v;
+    else
+    {
+        llOwnerSay("[TW] Unknown config key: " + k);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+afterConfigLoaded()
+{
+    llOwnerSay("[TW] Config loaded: " + gTowerTypeName
+        + " dmg=" + (string)gDamage
+        + " range=" + (string)gTowerRange
+        + " acc=" + (string)gAccuracy
+        + " interval=" + (string)gAttackInterval);
+
+    // Proceed with startup sequence
+    discoverGM();
+    llSetTimerEvent(RETRY_INTERVAL);
+}
 
 
 // =============================================================================
@@ -116,14 +200,12 @@ handleGMHere(key gm_key)
     queryHandler();
 }
 
-// Step 2: ask GM for the placement handler key
 queryHandler()
 {
     llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL, "HANDLER_QUERY");
     llOwnerSay("[TW] Sent HANDLER_QUERY.");
 }
 
-// Step 3: GM replied with the handler key — request grid info
 handleHandlerInfo(string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -137,50 +219,39 @@ handleHandlerInfo(string msg)
 
     gHandlerKey = handler_key;
     llOwnerSay("[TW] Handler: " + (string)gHandlerKey + ". Requesting grid info...");
+    requestGridInfo();
+}
 
+requestGridInfo()
+{
     llRegionSayTo(gGM_KEY, GRID_INFO_CHANNEL,
         "GRID_INFO_REQUEST|" + (string)llGetKey()
         + "|" + (string)gHandlerKey);
 }
 
-// Step 4: handler replied with grid info — derive grid coords and register
 handleGridInfo(string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 5)
-    {
-        llOwnerSay("[TW] Malformed GRID_INFO: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 5) return;
 
     gGridOrigin = <(float)llList2String(parts, 1),
                    (float)llList2String(parts, 2),
                    (float)llList2String(parts, 3)>;
-    gCellSize   = (float)llList2String(parts, 4);
+    gGridCellSize  = (float)llList2String(parts, 4);
     gGridInfoReady = TRUE;
 
-    // Derive grid coords from world position
     gTowerPos = llGetPos();
-    gGridX = (integer)((gTowerPos.x - gGridOrigin.x) / gCellSize);
-    gGridY = (integer)((gTowerPos.y - gGridOrigin.y) / gCellSize);
+    gGridX    = (integer)((gTowerPos.x - gGridOrigin.x) / gGridCellSize);
+    gGridY    = (integer)((gTowerPos.y - gGridOrigin.y) / gGridCellSize);
 
-    llOwnerSay("[TW] Grid info received. Position derives to grid ("
-        + (string)gGridX + "," + (string)gGridY + ").");
+    llOwnerSay("[TW] Grid position: (" + (string)gGridX + "," + (string)gGridY + ").");
 
-    // Step 5: now register with correct grid coords
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
         "REGISTER|" + (string)REG_TYPE_TOWER
         + "|" + (string)gGridX
         + "|" + (string)gGridY);
 }
 
-handleGridInfoError(string msg)
-{
-    list parts = llParseString2List(msg, ["|"], []);
-    llOwnerSay("[TW] Grid info error: " + llList2String(parts, 1) + ". Will retry.");
-}
-
-// Step 6: GM confirmed registration — start attacking
 handleRegisterResponse(string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
@@ -189,11 +260,11 @@ handleRegisterResponse(string msg)
     {
         gRegistered = TRUE;
         llSetTimerEvent(0);
-        llOwnerSay("[TW] Registered at grid (" + (string)gGridX + ","
-            + (string)gGridY + ")."
-            + " Range=" + (string)TOWER_RANGE + "m"
-            + " Interval=" + (string)ATTACK_INTERVAL + "s");
-        llSetTimerEvent(ATTACK_INTERVAL);
+        llOwnerSay("[TW] Registered: " + gTowerTypeName
+            + " at (" + (string)gGridX + "," + (string)gGridY + ")"
+            + " range=" + (string)gTowerRange + "m"
+            + " interval=" + (string)gAttackInterval + "s");
+        llSetTimerEvent(gAttackInterval);
     }
     else if (cmd == "REGISTER_REJECTED")
     {
@@ -213,21 +284,13 @@ handleHeartbeat(string msg)
 // TARGETING
 // =============================================================================
 
-// Returns the key of the best target from a flat enemy position list, or
-// NULL_KEY if no enemy is within range.
-//
-// TARGETING_STRATEGY values:
-//   0 = nearest (current)
-//
-// To add a new strategy, add an else-if branch here. The attack cycle
-// calls pickTarget() and never needs to change.
 key pickTarget(list enemy_positions, integer strategy)
 {
     integer count = llGetListLength(enemy_positions) / 5;
     if (count == 0) return NULL_KEY;
 
     key   best_key  = NULL_KEY;
-    float best_dist = TOWER_RANGE + 1.0;
+    float best_dist = gTowerRange + 1.0;
 
     gTowerPos = llGetPos();
 
@@ -240,8 +303,7 @@ key pickTarget(list enemy_positions, integer strategy)
                             (float)llList2String(enemy_positions, idx + 3)>;
 
         float dist = llVecDist(gTowerPos, enemy_pos);
-
-        if (dist <= TOWER_RANGE && dist < best_dist)
+        if (dist <= gTowerRange && dist < best_dist)
         {
             best_dist = dist;
             best_key  = (key)llList2String(enemy_positions, idx);
@@ -259,7 +321,7 @@ key pickTarget(list enemy_positions, integer strategy)
 
 float calcHitChance(float dist)
 {
-    float chance = ACCURACY * (1.0 - (dist / TOWER_RANGE * FALLOFF));
+    float chance = gAccuracy * (1.0 - (dist / gTowerRange * gFalloff));
     if (chance < 0.05) chance = 0.05;
     if (chance > 1.0)  chance = 1.0;
     return chance;
@@ -274,10 +336,10 @@ integer resolveAttack(key target_key, vector target_pos)
     if (hit)
     {
         llRegionSayTo(target_key, ENEMY_CHANNEL,
-            "TAKE_DAMAGE|" + (string)DAMAGE);
+            "TAKE_DAMAGE|" + (string)gDamage);
         llOwnerSay("[TW] HIT  dist=" + (string)((integer)dist)
             + "m chance=" + (string)((integer)(hit_chance * 100)) + "%"
-            + " dmg=" + (string)((integer)DAMAGE));
+            + " dmg=" + (string)((integer)gDamage));
     }
     else
     {
@@ -302,7 +364,7 @@ requestTarget()
         + "|" + (string)gTowerPos.x
         + "|" + (string)gTowerPos.y
         + "|" + (string)gTowerPos.z
-        + "|" + (string)TOWER_RANGE);
+        + "|" + (string)gTowerRange);
 }
 
 handleTargetResponse(string msg)
@@ -313,11 +375,7 @@ handleTargetResponse(string msg)
     key target_key = (key)llList2String(parts, 1);
     if (target_key == NULL_KEY) return;
 
-    if (llGetListLength(parts) < 5)
-    {
-        llOwnerSay("[TW] Malformed TARGET_RESPONSE: " + msg);
-        return;
-    }
+    if (llGetListLength(parts) < 5) return;
 
     vector target_pos = <(float)llList2String(parts, 2),
                          (float)llList2String(parts, 3),
@@ -335,7 +393,12 @@ default
 {
     state_entry()
     {
-        llOwnerSay("[TW] Tower starting up...");
+        // type ID comes from start_param set by GM's llRezObject call.
+        // On manual rez (start_param=0), default to type 1 (basic tower).
+        gTowerTypeId = llGetStartParameter();
+        if (gTowerTypeId < 1) gTowerTypeId = 1;
+
+        llOwnerSay("[TW] Tower type " + (string)gTowerTypeId + " starting up...");
         gTowerPos = llGetPos();
 
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
@@ -345,8 +408,24 @@ default
         llListen(SPAWNER_CHANNEL,      "", NULL_KEY, "");
         llListen(GRID_INFO_CHANNEL,    "", NULL_KEY, "");
 
-        discoverGM();
-        llSetTimerEvent(RETRY_INTERVAL);
+        // Notecard loading happens first — afterConfigLoaded() triggers discovery
+        startNotecardLoad();
+    }
+
+    dataserver(key query_id, string data)
+    {
+        if (query_id != gNotecardQuery) return;
+
+        if (data == EOF)
+        {
+            gConfigLoaded = TRUE;
+            afterConfigLoaded();
+            return;
+        }
+
+        parseConfigLine(data);
+        gCurrentLine++;
+        gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -366,11 +445,8 @@ default
         else if (channel == GRID_INFO_CHANNEL)
         {
             list parts = llParseString2List(msg, ["|"], []);
-            string cmd = llList2String(parts, 0);
-            if (cmd == "GRID_INFO")
+            if (llList2String(parts, 0) == "GRID_INFO")
                 handleGridInfo(msg);
-            else if (cmd == "GRID_INFO_ERROR")
-                handleGridInfoError(msg);
         }
         else if (channel == GM_REGISTER_CHANNEL && id == gGM_KEY)
         {
@@ -390,21 +466,19 @@ default
 
     timer()
     {
+        if (!gConfigLoaded) return;   // waiting for notecard — shouldn't happen
+
         if (!gRegistered)
         {
-            // Retry whichever setup step is incomplete
             if (gDiscovering || gGM_KEY == NULL_KEY)
                 discoverGM();
             else if (gHandlerKey == NULL_KEY)
                 queryHandler();
             else if (!gGridInfoReady)
-                llRegionSayTo(gGM_KEY, GRID_INFO_CHANNEL,
-                    "GRID_INFO_REQUEST|" + (string)llGetKey()
-                    + "|" + (string)gHandlerKey);
+                requestGridInfo();
             return;
         }
 
-        // Registered — attack cycle tick
         requestTarget();
     }
 
