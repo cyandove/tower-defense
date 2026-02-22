@@ -719,6 +719,18 @@ handleControllerMessage(key sender, string msg)
     {
         gCtrl_Key = sender;
         llOwnerSay("[GM] Controller registered: " + (string)gCtrl_Key);
+        // Replay any handler/spawner registrations that arrived before us
+        integer i;
+        integer n = llGetListLength(gRegistry) / 5;
+        for (i = 0; i < n; i++)
+        {
+            integer idx = i * 5;
+            integer ot  = llList2Integer(gRegistry, idx + 1);
+            if (ot == 3 || ot == 4)
+                llRegionSayTo(gCtrl_Key, -2013,
+                    "REGISTERED|" + llList2String(gRegistry, idx)
+                    + "|" + (string)ot);
+        }
         return;
     }
 
