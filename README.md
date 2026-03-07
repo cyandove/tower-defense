@@ -1,0 +1,191 @@
+# LSL Tower Defense
+
+A multi-script tower defense game for Second Life / OpenSimulator, written in LSL (Linden Scripting Language).
+
+---
+
+## How it works
+
+The game runs as a set of cooperating scripts, each living in its own prim. Only the **controller** is placed manually — it rezzes everything else at setup time and tears it down on game over or reset.
+
+| Script | Prim | Role |
+|---|---|---|
+| `controller.lsl` | Controller | Map, waypoints, lifecycle, lives, score, wave escalation |
+| `game_manager.lsl` | GameManager | Registry, routing, targeting, placement validation |
+| `spawner.lsl` | Spawner | Enemy spawning, wave execution |
+| `placement_handler.lsl` | PlacementHandler | Touch-to-grid translation, tower selection dialog |
+| `tower_basic.lsl` | Tower | Attack cycle, hit resolution |
+| `enemy_base.lsl` | Enemy | Waypoint movement, damage handling |
+
+---
+
+## Repository layout
+
+```
+lib/           — LSL scripts (.lsl) and config notecards (.cfg)
+  config/      — tower and enemy stat notecards
+  animations/  — optional animation layer scripts
+docs/          — design notes per phase
+plan.md        — phased development log
+```
+
+---
+
+## In-world setup
+
+### Step 1 — Prepare the controller prim
+
+The controller prim's inventory must contain these objects (names must match exactly):
+
+| Inventory item | Script inside |
+|---|---|
+| `GameManager` | `game_manager.lsl` |
+| `PlacementHandler` | `placement_handler.lsl` |
+| `Spawner` | `spawner.lsl` |
+
+### Step 2 — Prepare the GameManager prim
+
+The GameManager prim's inventory must contain:
+
+| Inventory item | Script inside |
+|---|---|
+| `Tower` | `tower_basic.lsl` |
+
+### Step 3 — Prepare the Spawner prim
+
+The Spawner prim's inventory must contain:
+
+| Inventory item | Script inside |
+|---|---|
+| `Enemy` | `enemy_base.lsl` |
+| `spawner.cfg` | Enemy stats notecard |
+
+### Step 4 — Prepare the Tower prim
+
+The Tower prim's inventory must contain the appropriate config notecard for each tower type:
+
+| Notecard | Tower type |
+|---|---|
+| `tower_basic.cfg` | Basic Tower (type ID 1) |
+| `tower_sniper.cfg` | Sniper Tower (type ID 2) |
+
+### Step 5 — Place and start
+
+1. Place **only the controller prim** at the **south-west corner** of your intended grid area. Its position becomes the `(0,0)` grid origin.
+2. Set `CELL_SIZE` in `controller.lsl` to match your in-world metre scale (default `2.0`).
+3. **Touch the controller** to begin setup. It rezzes the GM, placement handler, and spawner, sends each its config, and waits for all three to report ready.
+4. Once chat shows `[CTL] Ready. Touch to start wave 1.`, **touch the controller again** to start wave 1.
+
+The placement handler (a flat prim covering the grid) can be touched by any player to open the tower selection dialog.
+
+---
+
+## Config notecards
+
+Tower and enemy parameters are `key=value` text files. `#` begins a comment; blank lines are ignored.
+
+**Tower notecard keys** (`tower_basic.cfg`, `tower_sniper.cfg`):
+
+| Key | Type | Description |
+|---|---|---|
+| `tower_type_name` | string | Display name |
+| `damage` | float | Damage per hit |
+| `range` | float | Attack range in metres |
+| `accuracy` | float | Base hit chance (0.0–1.0) |
+| `falloff` | float | Accuracy reduction at max range (0.0–1.0) |
+| `attack_interval` | float | Seconds between attack attempts |
+| `targeting_strategy` | integer | `0` = nearest enemy |
+
+**Spawner notecard keys** (`spawner.cfg`):
+
+| Key | Type | Description |
+|---|---|---|
+| `enemy_type_name` | string | Display name |
+| `enemy_health` | float | Starting health |
+| `enemy_speed` | float | Movement speed (metres/sec) |
+| `enemies_per_wave` | integer | Default enemies per wave (overridden by wave escalation) |
+| `spawn_interval` | float | Seconds between spawns within a wave |
+
+---
+
+## Map definitions
+
+Maps are defined as `loadMap_N()` functions in `controller.lsl`. Each map is a 300-entry list (10×10 grid, stride 3: `[type, occupied, 0]`).
+
+Cell types:
+- `0` — blocked (impassable, unbuildable)
+- `1` — buildable (tower can be placed here)
+- `2` — path (enemy route)
+
+The entry cell is the path cell on `y=0` (the first row). `loadMap()` calls `deriveWaypoints()` automatically — no manual waypoint authoring needed.
+
+To add a new map: write a `loadMap_2()` function and add a branch in `loadMap()`.
+
+---
+
+## Wave progression
+
+Wave N spawns `WAVE_BASE + (N-1) × WAVE_INCREMENT` enemies.
+
+With the defaults (`WAVE_BASE=3`, `WAVE_INCREMENT=2`): wave 1 = 3, wave 2 = 5, wave 3 = 7, …
+
+Adjust these constants at the top of `controller.lsl`.
+
+---
+
+## Debug commands
+
+All commands are typed in local chat (channel 0) by the **object owner** only.
+
+### Lifecycle commands
+
+| Command | Description |
+|---|---|
+| `/td ctl status` | Print lifecycle state, wave number, lives, score, enemies out, and free memory |
+| `/td ctl map` | Print an ASCII map dump (`B`=buildable, `P`=path, `X`=blocked, lowercase=occupied, `r`=reserved) |
+| `/td ctl wave` | Force-start the next wave (useful for testing without waiting) |
+| `/td ctl reset` | Send `SHUTDOWN` to all managed objects, clean up, and return to idle |
+
+### Debug output commands
+
+| Command | Description |
+|---|---|
+| `/td ctl debug on` | Enable verbose debug output on **all scripts simultaneously** |
+| `/td ctl debug off` | Disable verbose debug output on all scripts |
+
+Debug output is **off by default**. When enabled, all six scripts print routine chatter: registration events, wave starts, hit/miss results, waypoint movement, heartbeat culls, and config confirmations.
+
+To enable debug output at compile time (before any commands are available), set `DEBUG = TRUE` at the top of the relevant script before pasting it into the Second Life editor.
+
+**What always prints** (regardless of debug state): error conditions such as missing inventory items, malformed notecards, unknown config keys, and rejected registrations.
+
+---
+
+## Channel map
+
+All inter-script communication uses negative channels to avoid public chat.
+
+| Channel | Purpose |
+|---|---|
+| `-2001` | `GM_REGISTER` |
+| `-2002` | `GM_DEREGISTER` |
+| `-2003` | `HEARTBEAT` |
+| `-2004` | `PLACEMENT` |
+| `-2005` | `TOWER_REPORT` |
+| `-2006` | `ENEMY_REPORT` |
+| `-2007` | `GM_DISCOVERY` |
+| `-2008` | `PLACEMENT_RESPONSE` |
+| `-2009` | `SPAWNER` |
+| `-2010` | `ENEMY` |
+| `-2011` | `GRID_INFO` |
+| `-2012` | `TOWER_PLACE` |
+| `-2013` | `CONTROLLER` (map queries, lifecycle, setup config) |
+| `-2099` | `DEBUG` (owner-only broadcast toggle) |
+
+---
+
+## Memory notes
+
+Each LSL script has a **64 KB heap**. The GM and controller are the most memory-pressured. Check `llGetFreeMemory()` via `/td ctl status` (controller) or the GM's link-message debug interface after making changes.
+
+Enemy position reports fire every ~1 second per live enemy — this is the dominant message volume source and scales with wave size.
