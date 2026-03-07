@@ -36,7 +36,7 @@ integer CONTROLLER_CHANNEL         = -2013;
 // -----------------------------------------------------------------------------
 integer MAP_WIDTH  = 10;
 integer MAP_HEIGHT = 10;
-integer TOP_FACE   = 1;
+integer TOP_FACE   = 0;
 integer DISCOVERY_RETRY_INTERVAL = 5;
 integer DIALOG_TIMEOUT = 30;
 
