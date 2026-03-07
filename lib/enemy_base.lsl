@@ -50,14 +50,6 @@ integer ENEMY_CHANNEL         = -2010;
 // How often the enemy reports its position to the GM, in seconds.
 float POSITION_REPORT_INTERVAL = 1.0;
 
-// How close the enemy needs to get to a waypoint before advancing to the next.
-// Increase if enemies get stuck; decrease for more precise path following.
-float WAYPOINT_THRESHOLD = 0.5;
-
-// llMoveToTarget tau value — lower = snappier movement, higher = smoother.
-// 0.5 is a good starting point for ground enemies.
-float MOVE_TAU = 0.5;
-
 // Registry type constant
 integer REG_TYPE_ENEMY = 2;
 
@@ -71,8 +63,7 @@ integer DISCOVERY_RETRY_INTERVAL = 5;
 key     gGM_KEY          = NULL_KEY;
 integer gRegistered      = FALSE;
 integer gDiscovering     = FALSE;
-list    gWaypoints       = [];    // list of vectors, parsed from config
-integer gCurrentWaypoint = 0;    // index into gWaypoints
+integer gDying           = FALSE; // guards moving_end after death/arrival
 float   gSpeed           = 2.0;
 float   gHealth          = 100.0;
 float   gMaxHealth       = 100.0; // set once from config, for health bar colour gradient
@@ -117,24 +108,43 @@ list parseWaypoints(string waypoint_str)
 
 
 // =============================================================================
-// MOVEMENT AND ARRIVAL HELPERS
-// Must be defined before the state blocks that call them.
+// KFM FRAME BUILDER
+// Converts absolute waypoint vectors to KFM displacement/rotation/time tuples.
 // =============================================================================
 
-moveToCurrentWaypoint()
+list buildKFMFrames(list waypoints, vector start, float speed)
 {
-    if (gCurrentWaypoint >= llGetListLength(gWaypoints)) return;
-    vector target = llList2Vector(gWaypoints, gCurrentWaypoint);
-    llMoveToTarget(target, MOVE_TAU);
-    dbg("[EN] Moving to waypoint " + (string)gCurrentWaypoint
-        + " at " + (string)target);
+    list frames = [];
+    vector prev = start;
+    integer count = llGetListLength(waypoints);
+    integer i;
+    for (i = 0; i < count; i++)
+    {
+        vector wp   = llList2Vector(waypoints, i);
+        vector disp = wp - prev;
+        float  dist = llVecMag(disp);
+        if (dist > 0.05)   // skip near-zero segments
+        {
+            float t = dist / speed;
+            frames += [disp, t];
+        }
+        prev = wp;
+    }
+    return frames;
 }
+
+
+// =============================================================================
+// ARRIVAL AND DEATH HELPERS
+// Must be defined before the state blocks that call them.
+// =============================================================================
 
 onArrival()
 {
     dbg("[EN] Reached end of path. Reporting arrival.");
+    gDying = TRUE;
     llSetTimerEvent(0);
-    llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
+    llSetKeyframedMotion([], [KFM_COMMAND, KFM_CMD_STOP]);
 
     if (gGM_KEY != NULL_KEY)
     {
@@ -150,8 +160,9 @@ onArrival()
 onDeath()
 {
     dbg("[EN] Killed! Reporting to GM.");
+    gDying = TRUE;
     llSetTimerEvent(0);
-    llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
+    llSetKeyframedMotion([], [KFM_COMMAND, KFM_CMD_STOP]);
 
     if (gGM_KEY != NULL_KEY)
     {
@@ -196,21 +207,19 @@ state active
 {
     state_entry()
     {
+        gDying = FALSE;
         gDebug = DEBUG;
         dbg("[EN] Awake. Discovering GM...");
 
-        // Make the prim physical so llMoveToTarget works
-        llSetStatus(STATUS_PHYSICS, TRUE);
-
-        // Prevent the enemy from rotating or tipping due to physics
-        llSetStatus(STATUS_ROTATE_X, FALSE);
-        llSetStatus(STATUS_ROTATE_Y, FALSE);
+        // KFM requires non-physical objects with a simple physics shape
+        llSetStatus(STATUS_PHYSICS, FALSE);
+        llSetPrimitiveParams([PRIM_PHYSICS_SHAPE_TYPE, PRIM_PHYSICS_SHAPE_CONVEX]);
 
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY,     "");
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
         llListen(ENEMY_CHANNEL,        "", NULL_KEY,     "");
-        llListen(DBG_CHANNEL,        "", llGetOwner(), "");
+        llListen(DBG_CHANNEL,          "", llGetOwner(), "");
 
         // Announce to the spawner that we're alive and ready for config.
         // The spawner listens on ENEMY_CHANNEL for ENEMY_READY.
@@ -275,25 +284,27 @@ state active
                     llOwnerSay("[EN] Malformed ENEMY_CONFIG: " + msg);
                     return;
                 }
-                gSpeed           = (float)llList2String(parts, 1);
-                gHealth          = (float)llList2String(parts, 2);
-                gMaxHealth       = gHealth;
-                gWaypoints       = parseWaypoints(llList2String(parts, 3));
-                gCurrentWaypoint = 0;
-                gConfigReceived  = TRUE;
+                gSpeed          = (float)llList2String(parts, 1);
+                gHealth         = (float)llList2String(parts, 2);
+                gMaxHealth      = gHealth;
+                gConfigReceived = TRUE;
                 llMessageLinked(LINK_THIS, ANIM_SPAWNED, (string)gHealth, NULL_KEY);
+
+                list waypoints = parseWaypoints(llList2String(parts, 3));
 
                 dbg("[EN] Config received. Speed=" + (string)gSpeed
                     + " Health=" + (string)gHealth
-                    + " Waypoints=" + (string)llGetListLength(gWaypoints));
+                    + " Waypoints=" + (string)llGetListLength(waypoints));
 
-                if (llGetListLength(gWaypoints) == 0)
+                if (llGetListLength(waypoints) == 0)
                 {
                     llOwnerSay("[EN] Error: no waypoints in config. Cannot move.");
                     return;
                 }
 
-                moveToCurrentWaypoint();
+                list kfm = buildKFMFrames(waypoints, llGetPos(), gSpeed);
+                llSetKeyframedMotion(kfm, [KFM_DATA, KFM_TRANSLATION]);
+                // waypoints and kfm go out of scope — heap freed
 
                 if (gRegistered)
                     llSetTimerEvent(POSITION_REPORT_INTERVAL);
@@ -333,10 +344,8 @@ state active
             return;
         }
 
-        // Position reporting phase — check waypoint progress and report position
+        // Position reporting only — KFM handles waypoint progression
         vector pos = llGetPos();
-
-        // Report position to GM
         if (gRegistered && gGM_KEY != NULL_KEY)
         {
             llRegionSayTo(gGM_KEY, ENEMY_REPORT_CHANNEL,
@@ -344,28 +353,11 @@ state active
                 + "|" + (string)pos.y
                 + "|" + (string)pos.z);
         }
+    }
 
-        // Check if we've reached the current waypoint
-        if (gCurrentWaypoint < llGetListLength(gWaypoints))
-        {
-            vector target = llList2Vector(gWaypoints, gCurrentWaypoint);
-            float dist    = llVecDist(<pos.x, pos.y, 0.0>, <target.x, target.y, 0.0>);
-
-            if (dist < WAYPOINT_THRESHOLD)
-            {
-                gCurrentWaypoint++;
-
-                if (gCurrentWaypoint >= llGetListLength(gWaypoints))
-                {
-                    // Reached the final waypoint
-                    onArrival();
-                }
-                else
-                {
-                    moveToCurrentWaypoint();
-                }
-            }
-        }
+    moving_end()
+    {
+        if (!gDying) onArrival();
     }
 
     on_rez(integer start_param)
