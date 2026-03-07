@@ -108,6 +108,81 @@ Tower and enemy parameters are `key=value` text files. `#` begins a comment; bla
 
 ---
 
+## Adding a custom tower type
+
+Tower types are identified by an integer **type ID** (1-based). Adding a new type requires changes in four places — no other files need touching.
+
+### 1. Create the config notecard
+
+Create a new file in `lib/config/` following the notecard format described above. Example for a cannon tower:
+
+```
+# Cannon Tower config
+tower_type_name=Cannon Tower
+damage=60.0
+range=8.0
+accuracy=0.70
+falloff=0.5
+attack_interval=3.5
+targeting_strategy=0
+```
+
+### 2. Register the notecard in `tower_basic.lsl`
+
+Add the notecard filename to the `NOTECARD_NAMES` list. The list index is `type_id - 1`, so append to give the next available ID:
+
+```lsl
+list NOTECARD_NAMES = ["tower_basic.cfg", "tower_sniper.cfg", "tower_cannon.cfg"];
+//                     type 1              type 2               type 3 (new)
+```
+
+### 3. Register the type in `game_manager.lsl`
+
+Add a branch to both `towerObjName()` and `towerLabel()`:
+
+```lsl
+string towerObjName(integer type_id)
+{
+    if (type_id == 1) return "Tower";
+    if (type_id == 2) return "Tower";
+    if (type_id == 3) return "Tower";   // new
+    return "";
+}
+
+string towerLabel(integer type_id)
+{
+    if (type_id == 1) return "Basic";
+    if (type_id == 2) return "Sniper";
+    if (type_id == 3) return "Cannon";  // new
+    return "";
+}
+```
+
+All tower types share the same `Tower` object (and thus the same `tower_basic.lsl` script). The type ID encoded in `start_param` at rez time determines which notecard is loaded.
+
+### 4. Add the label to `placement_handler.lsl`
+
+Append the label string to `TOWER_LABELS`. The list index must match: `index + 1 == type_id`.
+
+```lsl
+list TOWER_LABELS = ["Basic", "Sniper", "Cannon"];
+//                   type 1   type 2    type 3 (new)
+```
+
+This label appears as a button in the `llDialog` tower selection popup. Note that `llDialog` supports a maximum of **12 buttons**, so the game supports at most 12 tower types.
+
+### Summary checklist
+
+| File | Change |
+|---|---|
+| `lib/config/tower_<name>.cfg` | Create notecard with stat keys |
+| `tower_basic.lsl` — `NOTECARD_NAMES` | Append `"tower_<name>.cfg"` |
+| `game_manager.lsl` — `towerObjName()` | Add `if (type_id == N) return "Tower";` |
+| `game_manager.lsl` — `towerLabel()` | Add `if (type_id == N) return "<Label>";` |
+| `placement_handler.lsl` — `TOWER_LABELS` | Append `"<Label>"` |
+
+---
+
 ## Map definitions
 
 Maps are defined as `loadMap_N()` functions in `controller.lsl`. Each map is a 300-entry list (10×10 grid, stride 3: `[type, occupied, 0]`).
