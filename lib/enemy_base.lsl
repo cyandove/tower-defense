@@ -126,7 +126,7 @@ list buildKFMFrames(list waypoints, vector start, float speed)
         if (dist > 0.05)   // skip near-zero segments
         {
             float t = dist / speed;
-            frames += [disp, ZERO_ROTATION, t];
+            frames += [disp, t];
         }
         prev = wp;
     }
