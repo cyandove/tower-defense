@@ -7,7 +7,7 @@
 // Can be removed without affecting game behaviour.
 //
 // Events handled:
-//   ANIM_STATE (300) — parse state|wave|lives|score and update floating text
+//   ANIM_STATE (300) — parse lifecycle|wave|lives|score and update floating text
 // =============================================================================
 
 
@@ -51,7 +51,7 @@ default
 
         // str format: "lifecycle|wave|lives|score"
         list parts   = llParseString2List(str, ["|"], []);
-        integer state = (integer)llList2String(parts, 0);
+        integer lifecycle = (integer)llList2String(parts, 0);
         integer wave  = (integer)llList2String(parts, 1);
         integer lives = (integer)llList2String(parts, 2);
         integer score = (integer)llList2String(parts, 3);
@@ -59,12 +59,12 @@ default
         string line1 = "Wave " + (string)wave
             + "   Lives: " + (string)lives
             + "   Score: " + (string)score;
-        string line2 = stateLabel(state);
+        string line2 = stateLabel(lifecycle);
 
         vector color;
-        if      (state == 5) color = <1.0, 0.0, 0.0>;   // game over — red
-        else if (state == 4) color = <0.0, 1.0, 0.0>;   // wave clear — green
-        else if (state == 3) color = <1.0, 0.8, 0.0>;   // wave active — amber
+        if      (lifecycle == 5) color = <1.0, 0.0, 0.0>;   // game over — red
+        else if (lifecycle == 4) color = <0.0, 1.0, 0.0>;   // wave clear — green
+        else if (lifecycle == 3) color = <1.0, 0.8, 0.0>;   // wave active — amber
         else                 color = <1.0, 1.0, 1.0>;   // other — white
 
         llSetText(line1 + "\n" + line2, color, 1.0);
