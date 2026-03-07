@@ -210,11 +210,18 @@ handleHandlerInfo(string msg)
 handleSpawnerConfig(key sender, string msg)
 {
     list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 4) return;
+    if (llGetListLength(parts) < 7) return;
 
     gGridX          = (integer)llList2String(parts, 1);
     gGridY          = (integer)llList2String(parts, 2);
     gWaypointString = llList2String(parts, 3);
+
+    // Move to designated position (no 10m limit with llSetRegionPos)
+    vector target = <(float)llList2String(parts, 4),
+                     (float)llList2String(parts, 5),
+                     (float)llList2String(parts, 6)>;
+    llSetRegionPos(target);
+
     gConfigured     = TRUE;
     gPaired         = TRUE;
 

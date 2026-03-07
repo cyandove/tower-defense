@@ -350,7 +350,28 @@ default
         }
         else if (channel == CONTROLLER_CHANNEL)
         {
-            if (msg == "SHUTDOWN")
+            list parts = llParseString2List(msg, ["|"], []);
+            string cmd = llList2String(parts, 0);
+            if (cmd == "HANDLER_CONFIG")
+            {
+                // Move to grid centre, then re-derive geometry from new position
+                vector target = <(float)llList2String(parts, 1),
+                                 (float)llList2String(parts, 2),
+                                 (float)llList2String(parts, 3)>;
+                llSetRegionPos(target);
+                initGridFromPrim();
+                llOwnerSay("[PH] Moved to grid centre. Origin=" + (string)gGridOrigin
+                    + " Cell=" + (string)gCellSize + "m");
+                // Re-register to push corrected grid origin to GM
+                if (gGM_KEY != NULL_KEY)
+                    llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
+                        "REGISTER|4|0|0"
+                        + "|" + (string)gGridOrigin.x
+                        + "|" + (string)gGridOrigin.y
+                        + "|" + (string)gGridOrigin.z
+                        + "|" + (string)gCellSize);
+            }
+            else if (cmd == "SHUTDOWN")
             {
                 llOwnerSay("[PH] Shutdown.");
                 if (gGM_KEY != NULL_KEY)

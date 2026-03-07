@@ -736,13 +736,19 @@ handleControllerMessage(key sender, string msg)
 
     if (cmd == "GM_CONFIG")
     {
-        if (llGetListLength(parts) < 5) return;
+        if (llGetListLength(parts) < 8) return;
         gCtrl_Key     = sender;
         gGridOrigin   = <(float)llList2String(parts, 1),
                          (float)llList2String(parts, 2),
                          (float)llList2String(parts, 3)>;
         gGridCellSize = (float)llList2String(parts, 4);
         gConfigured   = TRUE;
+
+        // Move to designated position (no 10m limit with llSetRegionPos)
+        vector target = <(float)llList2String(parts, 5),
+                         (float)llList2String(parts, 6),
+                         (float)llList2String(parts, 7)>;
+        llSetRegionPos(target);
 
         llOwnerSay("[GM] Config received from controller. Grid origin="
             + (string)gGridOrigin + " cell=" + (string)gGridCellSize + "m");

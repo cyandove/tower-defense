@@ -316,22 +316,19 @@ rezAllObjects()
     if (llGetInventoryType(INV_SPAWNER) == INVENTORY_NONE)
     { llOwnerSay("[CTL] Missing inventory: " + INV_SPAWNER); return; }
 
-    // Rez GM slightly above and behind the grid origin
-    vector gm_pos = gGridOrigin + <0.5, -2.0, 1.0>;
-    llRezObject(INV_GM, gm_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed GM at " + (string)gm_pos);
+    // Rez all objects near the controller (within 10m limit).
+    // Each object will move itself to its correct position after receiving
+    // its config message containing the target position.
+    vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
 
-    // Rez placement handler as a flat prim centred on the grid
-    vector handler_pos = <gGridOrigin.x,
-                          gGridOrigin.y,
-                          gGridOrigin.z + 0.05>;
-    llRezObject(INV_HANDLER, handler_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed handler at " + (string)handler_pos);
+    llRezObject(INV_GM, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    llOwnerSay("[CTL] Rezzed GM near controller.");
 
-    // Rez spawner at the path entry cell
-    vector spawn_pos = entryWorldPos();
-    llRezObject(INV_SPAWNER, spawn_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed spawner at " + (string)spawn_pos);
+    llRezObject(INV_HANDLER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    llOwnerSay("[CTL] Rezzed handler near controller.");
+
+    llRezObject(INV_SPAWNER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    llOwnerSay("[CTL] Rezzed spawner near controller.");
 
     gSetupPending = 3;   // waiting for GM + handler + spawner to register
     gLifecycle    = STATE_SETUP;
@@ -353,15 +350,21 @@ onObjectRegistered(key obj_key, integer obj_type)
 
 sendConfigs()
 {
-    // Send GM its config: grid origin and cell size
+    // Send GM its config: grid origin, cell size, and target position.
+    // GM will move itself to target_gm using llSetRegionPos.
+    vector target_gm = gGridOrigin + <0.5, -2.0, 1.0>;
     llRegionSayTo(gGM_Key, CTRL,
         "GM_CONFIG"
         + "|" + (string)gGridOrigin.x
         + "|" + (string)gGridOrigin.y
         + "|" + (string)gGridOrigin.z
-        + "|" + (string)CELL_SIZE);
+        + "|" + (string)CELL_SIZE
+        + "|" + (string)target_gm.x
+        + "|" + (string)target_gm.y
+        + "|" + (string)target_gm.z);
 
-    // Send spawner its config: grid position, waypoint string
+    // Send spawner its config: entry cell coords, waypoint string, and target position.
+    // Spawner will move itself to target_spawner using llSetRegionPos.
     string wps = buildWaypointString();
     // Entry cell coords  -  first path cell on y=0
     integer ex = 0;
@@ -369,11 +372,26 @@ sendConfigs()
     for (x = 0; x < MAP_W; x++)
         if (cellType(x, 0) == 2) { ex = x; x = MAP_W; }   // break
 
+    vector target_spawner = entryWorldPos();
     llRegionSayTo(gSpawner_Key, CTRL,
         "SPAWNER_CONFIG"
         + "|" + (string)ex
         + "|0"
-        + "|" + wps);
+        + "|" + wps
+        + "|" + (string)target_spawner.x
+        + "|" + (string)target_spawner.y
+        + "|" + (string)target_spawner.z);
+
+    // Send handler its config: target position (grid centre).
+    // Handler will move itself there and re-derive grid geometry.
+    vector target_handler = <gGridOrigin.x + MAP_W * CELL_SIZE * 0.5,
+                              gGridOrigin.y + MAP_H * CELL_SIZE * 0.5,
+                              gGridOrigin.z + 0.05>;
+    llRegionSayTo(gHandler_Key, CTRL,
+        "HANDLER_CONFIG"
+        + "|" + (string)target_handler.x
+        + "|" + (string)target_handler.y
+        + "|" + (string)target_handler.z);
 
     llOwnerSay("[CTL] Configs sent. Waiting for ready confirmations...");
 }
