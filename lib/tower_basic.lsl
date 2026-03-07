@@ -51,7 +51,7 @@ integer ANIM_FIRE_MISS  = 102;
 // -----------------------------------------------------------------------------
 integer DEBUG         = FALSE;   // compile-time default
 integer gDebug        = FALSE;   // runtime toggle
-integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
@@ -382,7 +382,7 @@ default
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
         llListen(TOWER_REPORT_CHANNEL, "", NULL_KEY,     "");
-        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
+        llListen(DBG_CHANNEL,        "", llGetOwner(), "");
         // on_rez fires after state_entry and kicks off the startup sequence.
         // A manual script reset (no on_rez) starts as type 1 at (0,0).
     }
@@ -426,7 +426,7 @@ default
             if (llList2String(parts, 0) == "TARGET_RESPONSE")
                 handleTargetResponse(msg);
         }
-        else if (channel == DEBUG_CHANNEL)
+        else if (channel == DBG_CHANNEL)
         {
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;

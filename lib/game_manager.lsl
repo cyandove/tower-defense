@@ -52,7 +52,7 @@
 // -----------------------------------------------------------------------------
 integer DEBUG         = FALSE;   // compile-time default
 integer gDebug        = FALSE;   // runtime toggle
-integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
@@ -888,7 +888,7 @@ default
         llListen(-2011,         "", NULL_KEY,     "");   // GRID_INFO
         llListen(-2012,         "", NULL_KEY,     "");   // TOWER_PLACE
         llListen(-2013,         "", NULL_KEY,     "");   // CONTROLLER
-        llListen(DEBUG_CHANNEL, "", llGetOwner(), "");   // DEBUG
+        llListen(DBG_CHANNEL, "", llGetOwner(), "");   // DEBUG
 
         llSetTimerEvent(10);
 
@@ -912,7 +912,7 @@ default
         else if (channel == -2011) handleGridInfoRequest(id, msg);
         else if (channel == -2012) handleTowerPlaceRequest(id, msg);
         else if (channel == -2013) handleControllerMessage(id, msg);
-        else if (channel == DEBUG_CHANNEL)
+        else if (channel == DBG_CHANNEL)
         {
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;

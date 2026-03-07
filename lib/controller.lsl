@@ -67,7 +67,7 @@ integer CTRL = -2013;
 // -----------------------------------------------------------------------------
 integer DEBUG         = FALSE;   // compile-time default — flip before pasting for verbose mode
 integer gDebug        = FALSE;   // runtime toggle
-integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
@@ -705,13 +705,13 @@ handleDebug(string msg)
     else if (msg == "/td ctl debug on")
     {
         gDebug = TRUE;
-        llSay(DEBUG_CHANNEL, "DEBUG_ON");
+        llSay(DBG_CHANNEL, "DEBUG_ON");
         llOwnerSay("[CTL] Debug ON (all scripts).");
     }
     else if (msg == "/td ctl debug off")
     {
         gDebug = FALSE;
-        llSay(DEBUG_CHANNEL, "DEBUG_OFF");
+        llSay(DBG_CHANNEL, "DEBUG_OFF");
         llOwnerSay("[CTL] Debug OFF (all scripts).");
     }
 }
@@ -816,7 +816,7 @@ default
         gMenuChannel = -(integer)("0x" + llGetSubString((string)llGetKey(), 0, 6));
         llListen(CTRL,          "", NULL_KEY,     "");
         llListen(0,             "", llGetOwner(), "");
-        llListen(DEBUG_CHANNEL, "", llGetOwner(), "");
+        llListen(DBG_CHANNEL, "", llGetOwner(), "");
         llSetTimerEvent(1.0);
         llOwnerSay("[CTL] Controller ready. Touch to set up game.");
         llOwnerSay("[CTL] Mem: " + (string)llGetFreeMemory() + "b");
@@ -834,7 +834,7 @@ default
         else if (channel == 0 && id == llGetOwner()
                  && llGetSubString(msg, 0, 6) == "/td ctl")
             handleDebug(msg);
-        else if (channel == DEBUG_CHANNEL)
+        else if (channel == DBG_CHANNEL)
         {
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;

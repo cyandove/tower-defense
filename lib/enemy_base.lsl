@@ -29,7 +29,7 @@ integer ANIM_DEATH       = 202;
 // -----------------------------------------------------------------------------
 integer DEBUG         = FALSE;   // compile-time default
 integer gDebug        = FALSE;   // runtime toggle
-integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
@@ -210,7 +210,7 @@ state active
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
         llListen(ENEMY_CHANNEL,        "", NULL_KEY,     "");
-        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
+        llListen(DBG_CHANNEL,        "", llGetOwner(), "");
 
         // Announce to the spawner that we're alive and ready for config.
         // The spawner listens on ENEMY_CHANNEL for ENEMY_READY.
@@ -257,7 +257,7 @@ state active
                 llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL,
                     "ACK|" + llList2String(parts, 1));
         }
-        else if (channel == DEBUG_CHANNEL)
+        else if (channel == DBG_CHANNEL)
         {
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;

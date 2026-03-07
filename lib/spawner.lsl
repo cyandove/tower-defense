@@ -42,7 +42,7 @@
 // -----------------------------------------------------------------------------
 integer DEBUG         = FALSE;   // compile-time default
 integer gDebug        = FALSE;   // runtime toggle
-integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
@@ -344,7 +344,7 @@ default
         llListen(SPAWNER_CHANNEL,      "", NULL_KEY,     "");
         llListen(ENEMY_CHANNEL,        "", NULL_KEY,     "");
         llListen(CONTROLLER_CHANNEL,   "", NULL_KEY,     "");
-        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
+        llListen(DBG_CHANNEL,        "", llGetOwner(), "");
 
         startNotecardLoad();
     }
@@ -405,7 +405,7 @@ default
                 llDie();
             }
         }
-        else if (channel == DEBUG_CHANNEL)
+        else if (channel == DBG_CHANNEL)
         {
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;
