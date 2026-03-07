@@ -413,7 +413,8 @@ default
         }
         else if (channel == GM_REGISTER_CHANNEL && id == gGM_KEY)
         {
-            handleRegisterResponse(msg);
+            if (msg == "SHUTDOWN") llDie();
+            else handleRegisterResponse(msg);
         }
         else if (channel == HEARTBEAT_CHANNEL && id == gGM_KEY)
         {

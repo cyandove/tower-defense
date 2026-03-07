@@ -791,8 +791,16 @@ handleControllerMessage(key sender, string msg)
     }
     else if (cmd == "SHUTDOWN")
     {
-        dbg("[GM] Shutdown received. Deregistering and dying.");
-        llRegionSay(-2002, "DEREGISTER");
+        dbg("[GM] Shutdown received. Notifying towers then dying.");
+        // Tell every registered tower to die before we do.
+        integer i;
+        integer n = llGetListLength(gRegistry) / 5;
+        for (i = 0; i < n; i++)
+        {
+            integer idx = i * 5;
+            if (llList2Integer(gRegistry, idx + 1) == 1)
+                llRegionSayTo((key)llList2String(gRegistry, idx), -2001, "SHUTDOWN");
+        }
         llDie();
     }
 }
