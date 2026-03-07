@@ -120,10 +120,12 @@ rezTower(integer gx, integer gy, integer type_id)
     if (llGetInventoryType(obj_name) == INVENTORY_NONE)
     { llOwnerSay("[GM] '" + obj_name + "' not in inventory."); return; }
 
-    vector rez_pos = gridToWorld(gx, gy);
-    llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, type_id);
+    vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
+    integer sp = type_id * 10000 + gx * 100 + gy;
+    llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, sp);
     llOwnerSay("[GM] Rezzed type=" + (string)type_id
-        + " (" + (string)gx + "," + (string)gy + ")");
+        + " (" + (string)gx + "," + (string)gy + ")"
+        + " sp=" + (string)sp);
 }
 
 
@@ -685,7 +687,18 @@ handleRegisterMessage(key sender, string msg)
     }
 
     registerObject(sender, obj_type, gx, gy);
-    llRegionSayTo(sender, -2001, "REGISTER_OK|" + (string)obj_type);
+    if (obj_type == 1)
+    {
+        vector target = gridToWorld(gx, gy);
+        llRegionSayTo(sender, -2001, "REGISTER_OK|1"
+            + "|" + (string)target.x
+            + "|" + (string)target.y
+            + "|" + (string)target.z);
+    }
+    else
+    {
+        llRegionSayTo(sender, -2001, "REGISTER_OK|" + (string)obj_type);
+    }
 }
 
 handleDeregisterMessage(key sender, string msg)

@@ -46,9 +46,7 @@ integer GM_DEREGISTER_CHANNEL = -2002;
 integer HEARTBEAT_CHANNEL     = -2003;
 integer TOWER_REPORT_CHANNEL  = -2005;
 integer GM_DISCOVERY_CHANNEL  = -2007;
-integer SPAWNER_CHANNEL       = -2009;
 integer ENEMY_CHANNEL         = -2010;
-integer GRID_INFO_CHANNEL     = -2011;
 
 
 // -----------------------------------------------------------------------------
@@ -79,14 +77,10 @@ integer gTargetingStrategy  = 0;
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
 key     gGM_KEY        = NULL_KEY;
-key     gHandlerKey    = NULL_KEY;
 integer gRegistered    = FALSE;
 integer gDiscovering   = FALSE;
-integer gGridInfoReady = FALSE;
 vector  gTowerPos      = ZERO_VECTOR;
 
-vector  gGridOrigin    = ZERO_VECTOR;
-float   gGridCellSize  = 2.0;
 integer gGridX         = 0;
 integer gGridY         = 0;
 
@@ -195,57 +189,7 @@ handleGMHere(key gm_key)
 {
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
-    gTowerPos    = llGetPos();
     llOwnerSay("[TW] Found GM: " + (string)gGM_KEY);
-    queryHandler();
-}
-
-queryHandler()
-{
-    llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL, "HANDLER_QUERY");
-    llOwnerSay("[TW] Sent HANDLER_QUERY.");
-}
-
-handleHandlerInfo(string msg)
-{
-    list parts = llParseString2List(msg, ["|"], []);
-    key handler_key = (key)llList2String(parts, 1);
-
-    if (handler_key == NULL_KEY)
-    {
-        llOwnerSay("[TW] No handler registered yet. Will retry.");
-        return;
-    }
-
-    gHandlerKey = handler_key;
-    llOwnerSay("[TW] Handler: " + (string)gHandlerKey + ". Requesting grid info...");
-    requestGridInfo();
-}
-
-requestGridInfo()
-{
-    llRegionSayTo(gGM_KEY, GRID_INFO_CHANNEL,
-        "GRID_INFO_REQUEST|" + (string)llGetKey()
-        + "|" + (string)gHandlerKey);
-}
-
-handleGridInfo(string msg)
-{
-    list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 5) return;
-
-    gGridOrigin = <(float)llList2String(parts, 1),
-                   (float)llList2String(parts, 2),
-                   (float)llList2String(parts, 3)>;
-    gGridCellSize  = (float)llList2String(parts, 4);
-    gGridInfoReady = TRUE;
-
-    gTowerPos = llGetPos();
-    gGridX    = (integer)((gTowerPos.x - gGridOrigin.x) / gGridCellSize);
-    gGridY    = (integer)((gTowerPos.y - gGridOrigin.y) / gGridCellSize);
-
-    llOwnerSay("[TW] Grid position: (" + (string)gGridX + "," + (string)gGridY + ").");
-
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
         "REGISTER|" + (string)REG_TYPE_TOWER
         + "|" + (string)gGridX
@@ -259,11 +203,18 @@ handleRegisterResponse(string msg)
     if (cmd == "REGISTER_OK")
     {
         gRegistered = TRUE;
+        if (llGetListLength(parts) >= 5)
+        {
+            vector target = <(float)llList2String(parts, 2),
+                             (float)llList2String(parts, 3),
+                             (float)llList2String(parts, 4)>;
+            llSetRegionPos(target);
+            gTowerPos = llGetPos();
+        }
         llSetTimerEvent(0);
         llOwnerSay("[TW] Registered: " + gTowerTypeName
             + " at (" + (string)gGridX + "," + (string)gGridY + ")"
-            + " range=" + (string)gTowerRange + "m"
-            + " interval=" + (string)gAttackInterval + "s");
+            + " range=" + (string)gTowerRange + "m");
         llSetTimerEvent(gAttackInterval);
     }
     else if (cmd == "REGISTER_REJECTED")
@@ -393,20 +344,22 @@ default
 {
     state_entry()
     {
-        // type ID comes from start_param set by GM's llRezObject call.
-        // On manual rez (start_param=0), default to type 1 (basic tower).
-        gTowerTypeId = llGetStartParameter();
+        // start_param encodes: type_id * 10000 + gx * 100 + gy
+        // On manual rez (start_param=0), default to type 1 at (0,0).
+        integer sp = llGetStartParameter();
+        gTowerTypeId = sp / 10000;
+        gGridX       = (sp % 10000) / 100;
+        gGridY       = sp % 100;
         if (gTowerTypeId < 1) gTowerTypeId = 1;
 
-        llOwnerSay("[TW] Tower type " + (string)gTowerTypeId + " starting up...");
+        llOwnerSay("[TW] Tower type=" + (string)gTowerTypeId
+            + " gx=" + (string)gGridX + " gy=" + (string)gGridY + " starting...");
         gTowerPos = llGetPos();
 
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
         llListen(TOWER_REPORT_CHANNEL, "", NULL_KEY, "");
-        llListen(SPAWNER_CHANNEL,      "", NULL_KEY, "");
-        llListen(GRID_INFO_CHANNEL,    "", NULL_KEY, "");
 
         // Notecard loading happens first — afterConfigLoaded() triggers discovery
         startNotecardLoad();
@@ -436,18 +389,6 @@ default
             if (llList2String(parts, 0) == "GM_HERE" && gGM_KEY == NULL_KEY)
                 handleGMHere((key)llList2String(parts, 1));
         }
-        else if (channel == SPAWNER_CHANNEL && id == gGM_KEY)
-        {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llList2String(parts, 0) == "HANDLER_INFO")
-                handleHandlerInfo(msg);
-        }
-        else if (channel == GRID_INFO_CHANNEL)
-        {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llList2String(parts, 0) == "GRID_INFO")
-                handleGridInfo(msg);
-        }
         else if (channel == GM_REGISTER_CHANNEL && id == gGM_KEY)
         {
             handleRegisterResponse(msg);
@@ -472,10 +413,6 @@ default
         {
             if (gDiscovering || gGM_KEY == NULL_KEY)
                 discoverGM();
-            else if (gHandlerKey == NULL_KEY)
-                queryHandler();
-            else if (!gGridInfoReady)
-                requestGridInfo();
             return;
         }
 
