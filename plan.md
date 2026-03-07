@@ -10,6 +10,11 @@
     can relocate itself with llSetRegionPos (no distance cap). The placement handler
     re-derives grid geometry and re-registers with the GM after moving.
     Commit: cb47578
+7b. Fix tower rezzing 10m limit — encode gx/gy into start_param (type_id*10000 + gx*100 + gy)
+    so the GM rezzes towers at its own position and the tower moves to the correct grid cell
+    after receiving target world pos in REGISTER_OK. Eliminates handler query and grid info
+    request steps from tower startup. Also fixes TOP_FACE = 0 on placement handler.
+    Commits: 7067d2a, c06a666
 8. Add the animation layer last, once all functional behavior is stable and tested
 
 The main change is pulling placement handler work earlier, since getting the grid coordinate system right underpins tower placement, and you want to catch any issues with your map layout and coordinate math before you've built a lot of other systems on top of assumptions about it.
