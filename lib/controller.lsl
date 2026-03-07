@@ -93,7 +93,8 @@ integer WAVE_CLEAR_DELAY = 5;   // seconds between wave clear and next wave star
 // -----------------------------------------------------------------------------
 // GAME SETTINGS
 // -----------------------------------------------------------------------------
-integer STARTING_LIVES = 20;
+integer STARTING_LIVES      = 20;
+integer MENU_DIALOG_TIMEOUT = 30;   // seconds before an unanswered dialog is culled
 
 
 // -----------------------------------------------------------------------------
@@ -131,6 +132,8 @@ integer gWaveNum      = 0;
 integer gEnemiesOut   = 0;    // enemies currently alive this wave
 integer gWaveClearTimer = 0;  // countdown ticks for WAVE_CLEAR delay
 integer gSetupPending = 0;    // objects rezzed but not yet registered
+integer gMenuChannel  = 0;    // derived from prim key in state_entry
+list    gMenuDialogs  = [];   // [handle, avatar_key, expiry]  stride=3
 
 
 // =============================================================================
@@ -715,6 +718,92 @@ handleDebug(string msg)
 
 
 // =============================================================================
+// TOUCH MENU
+// Open an llDialog for any avatar who touches the controller.
+// Each touch gets its own per-avatar listener to avoid cross-talk.
+// Stale listeners are culled by the 1-second timer.
+// =============================================================================
+
+showMenu(key avatar)
+{
+    string prompt;
+    list   buttons;
+
+    if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
+    {
+        prompt  = "Tower Defense\nPress 'Start Game' to begin.";
+        buttons = ["Start Game"];
+    }
+    else if (gLifecycle == STATE_WAITING)
+    {
+        prompt  = "Wave " + (string)(gWaveNum + 1) + " ready"
+            + "\nLives: " + (string)gLives
+            + "   Score: " + (string)gScore;
+        buttons = ["Start Wave", "End Game"];
+    }
+    else if (gLifecycle == STATE_WAVE || gLifecycle == STATE_WAVE_CLEAR)
+    {
+        prompt  = "Wave " + (string)gWaveNum + " in progress"
+            + "\nLives: " + (string)gLives
+            + "   Score: " + (string)gScore;
+        buttons = ["End Game"];
+    }
+    else
+    {
+        // STATE_SETUP — busy
+        llRegionSayTo(avatar, 0, "Game is setting up, please wait...");
+        return;
+    }
+
+    integer handle = llListen(gMenuChannel, "", avatar, "");
+    gMenuDialogs += [handle, (string)avatar, llGetUnixTime() + MENU_DIALOG_TIMEOUT];
+    llDialog(avatar, prompt, buttons, gMenuChannel);
+}
+
+handleMenuResponse(key avatar, string choice)
+{
+    // Find and remove the listener for this avatar
+    integer idx = llListFindList(gMenuDialogs, [(string)avatar]);
+    if (idx != -1)
+    {
+        llListenRemove(llList2Integer(gMenuDialogs, idx - 1));
+        gMenuDialogs = llDeleteSubList(gMenuDialogs, idx - 1, idx + 1);
+    }
+
+    if (choice == "Start Game")
+    {
+        if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
+            startSetup();
+    }
+    else if (choice == "Start Wave")
+    {
+        if (gLifecycle == STATE_WAITING)
+            startNextWave();
+    }
+    else if (choice == "End Game")
+    {
+        resetGame();
+    }
+}
+
+cullStaleMenuDialogs()
+{
+    integer now   = llGetUnixTime();
+    integer count = llGetListLength(gMenuDialogs) / 3;
+    integer i     = count - 1;
+    for (; i >= 0; i--)
+    {
+        integer idx = i * 3;
+        if (llList2Integer(gMenuDialogs, idx + 2) < now)
+        {
+            llListenRemove(llList2Integer(gMenuDialogs, idx));
+            gMenuDialogs = llDeleteSubList(gMenuDialogs, idx, idx + 2);
+        }
+    }
+}
+
+
+// =============================================================================
 // MAIN STATE
 // =============================================================================
 
@@ -722,11 +811,12 @@ default
 {
     state_entry()
     {
-        gLifecycle = STATE_IDLE;
-        gDebug     = DEBUG;
-        llListen(CTRL,          "", NULL_KEY,      "");
-        llListen(0,             "", llGetOwner(),  "");
-        llListen(DEBUG_CHANNEL, "", llGetOwner(),  "");
+        gLifecycle   = STATE_IDLE;
+        gDebug       = DEBUG;
+        gMenuChannel = -(integer)("0x" + llGetSubString((string)llGetKey(), 0, 6));
+        llListen(CTRL,          "", NULL_KEY,     "");
+        llListen(0,             "", llGetOwner(), "");
+        llListen(DEBUG_CHANNEL, "", llGetOwner(), "");
         llSetTimerEvent(1.0);
         llOwnerSay("[CTL] Controller ready. Touch to set up game.");
         llOwnerSay("[CTL] Mem: " + (string)llGetFreeMemory() + "b");
@@ -734,14 +824,7 @@ default
 
     touch_start(integer num)
     {
-        if (llDetectedKey(0) != llGetOwner()) return;
-
-        if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
-            startSetup();
-        else if (gLifecycle == STATE_WAITING)
-            startNextWave();
-        else
-            dbg("[CTL] State=" + (string)gLifecycle + "  -  nothing to do on touch.");
+        showMenu(llDetectedKey(0));
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -756,17 +839,19 @@ default
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;
         }
+        else if (channel == gMenuChannel)
+            handleMenuResponse(id, msg);
     }
 
     timer()
     {
-        // Tick used only during WAVE_CLEAR delay
         if (gLifecycle == STATE_WAVE_CLEAR)
         {
             gWaveClearTimer--;
             if (gWaveClearTimer <= 0)
                 startNextWave();
         }
+        cullStaleMenuDialogs();
     }
 
     on_rez(integer start_param)
