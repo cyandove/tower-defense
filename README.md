@@ -45,11 +45,13 @@ The controller prim's inventory must contain these objects (names must match exa
 
 ### Step 2 — Prepare the GameManager prim
 
-The GameManager prim's inventory must contain:
+The GameManager prim's inventory must contain one object for each tower type. By default all types share a single object:
 
 | Inventory item | Script inside |
 |---|---|
 | `Tower` | `tower_basic.lsl` |
+
+If you add tower types with distinct object names (see [Adding a custom tower type](#adding-a-custom-tower-type)), add a corresponding object for each name.
 
 ### Step 3 — Prepare the Spawner prim
 
@@ -145,7 +147,7 @@ string towerObjName(integer type_id)
 {
     if (type_id == 1) return "Tower";
     if (type_id == 2) return "Tower";
-    if (type_id == 3) return "Tower";   // new
+    if (type_id == 3) return "Tower";   // new — shares the same object
     return "";
 }
 
@@ -158,7 +160,19 @@ string towerLabel(integer type_id)
 }
 ```
 
-All tower types share the same `Tower` object (and thus the same `tower_basic.lsl` script). The type ID encoded in `start_param` at rez time determines which notecard is loaded.
+`towerObjName()` is the name passed to `llRezObject`, so it must exactly match an object in the **GameManager prim's inventory**. All types can share one object (as above), or each type can use a distinct prim with its own shape, size, or animation scripts:
+
+```lsl
+string towerObjName(integer type_id)
+{
+    if (type_id == 1) return "Tower";         // short stubby prim
+    if (type_id == 2) return "Tower Sniper";  // tall thin prim
+    if (type_id == 3) return "Tower Cannon";  // wide barrel prim
+    return "";
+}
+```
+
+When using distinct object names, add each named object to the GameManager prim's inventory. All objects must still contain `tower_basic.lsl` — the type ID encoded in `start_param` at rez time determines which notecard is loaded, regardless of which object was rezzed.
 
 ### 4. Add the label to `placement_handler.lsl`
 
@@ -177,9 +191,10 @@ This label appears as a button in the `llDialog` tower selection popup. Note tha
 |---|---|
 | `lib/config/tower_<name>.cfg` | Create notecard with stat keys |
 | `tower_basic.lsl` — `NOTECARD_NAMES` | Append `"tower_<name>.cfg"` |
-| `game_manager.lsl` — `towerObjName()` | Add `if (type_id == N) return "Tower";` |
+| `game_manager.lsl` — `towerObjName()` | Add `if (type_id == N) return "<ObjName>";` |
 | `game_manager.lsl` — `towerLabel()` | Add `if (type_id == N) return "<Label>";` |
 | `placement_handler.lsl` — `TOWER_LABELS` | Append `"<Label>"` |
+| GameManager inventory | Add object named `<ObjName>` containing `tower_basic.lsl` |
 
 ---
 
