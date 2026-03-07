@@ -25,6 +25,14 @@ integer ANIM_DEATH       = 202;
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS — must match game_manager.lsl and spawner.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
@@ -72,6 +80,16 @@ integer gConfigReceived  = FALSE;
 
 
 // =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// =============================================================================
 // WAYPOINT PARSING
 // =============================================================================
 
@@ -108,13 +126,13 @@ moveToCurrentWaypoint()
     if (gCurrentWaypoint >= llGetListLength(gWaypoints)) return;
     vector target = llList2Vector(gWaypoints, gCurrentWaypoint);
     llMoveToTarget(target, MOVE_TAU);
-    llOwnerSay("[EN] Moving to waypoint " + (string)gCurrentWaypoint
+    dbg("[EN] Moving to waypoint " + (string)gCurrentWaypoint
         + " at " + (string)target);
 }
 
 onArrival()
 {
-    llOwnerSay("[EN] Reached end of path. Reporting arrival.");
+    dbg("[EN] Reached end of path. Reporting arrival.");
     llSetTimerEvent(0);
     llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
 
@@ -131,7 +149,7 @@ onArrival()
 
 onDeath()
 {
-    llOwnerSay("[EN] Killed! Reporting to GM.");
+    dbg("[EN] Killed! Reporting to GM.");
     llSetTimerEvent(0);
     llMoveToTarget(ZERO_VECTOR, 0.0);  // stop movement
 
@@ -178,7 +196,8 @@ state active
 {
     state_entry()
     {
-        llOwnerSay("[EN] Awake. Discovering GM...");
+        gDebug = DEBUG;
+        dbg("[EN] Awake. Discovering GM...");
 
         // Make the prim physical so llMoveToTarget works
         llSetStatus(STATUS_PHYSICS, TRUE);
@@ -187,10 +206,11 @@ state active
         llSetStatus(STATUS_ROTATE_X, FALSE);
         llSetStatus(STATUS_ROTATE_Y, FALSE);
 
-        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
-        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
-        llListen(ENEMY_CHANNEL,        "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY,     "");
+        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
+        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
+        llListen(ENEMY_CHANNEL,        "", NULL_KEY,     "");
+        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
 
         // Announce to the spawner that we're alive and ready for config.
         // The spawner listens on ENEMY_CHANNEL for ENEMY_READY.
@@ -213,7 +233,7 @@ state active
             {
                 gGM_KEY      = (key)llList2String(parts, 1);
                 gDiscovering = FALSE;
-                llOwnerSay("[EN] Found GM: " + (string)gGM_KEY);
+                dbg("[EN] Found GM: " + (string)gGM_KEY);
                 llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
                     "REGISTER|" + (string)REG_TYPE_ENEMY + "|0|0");
             }
@@ -224,7 +244,7 @@ state active
             if (llList2String(parts, 0) == "REGISTER_OK")
             {
                 gRegistered = TRUE;
-                llOwnerSay("[EN] Registered with GM.");
+                dbg("[EN] Registered with GM.");
                 // Don't stop timer yet — still waiting for config if not received
                 if (gConfigReceived)
                     llSetTimerEvent(POSITION_REPORT_INTERVAL);
@@ -236,6 +256,11 @@ state active
             if (llList2String(parts, 0) == "PING")
                 llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL,
                     "ACK|" + llList2String(parts, 1));
+        }
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
         }
         else if (channel == ENEMY_CHANNEL)
         {
@@ -258,7 +283,7 @@ state active
                 gConfigReceived  = TRUE;
                 llMessageLinked(LINK_THIS, ANIM_SPAWNED, (string)gHealth, NULL_KEY);
 
-                llOwnerSay("[EN] Config received. Speed=" + (string)gSpeed
+                dbg("[EN] Config received. Speed=" + (string)gSpeed
                     + " Health=" + (string)gHealth
                     + " Waypoints=" + (string)llGetListLength(gWaypoints));
 
@@ -281,7 +306,7 @@ state active
                 float amount = (float)llList2String(parts, 1);
                 gHealth -= amount;
 
-                llOwnerSay("[EN] Hit! -" + (string)((integer)amount)
+                dbg("[EN] Hit! -" + (string)((integer)amount)
                     + " hp, remaining: " + (string)((integer)gHealth));
 
                 llMessageLinked(LINK_THIS, ANIM_TAKE_DAMAGE, (string)gHealth, NULL_KEY);

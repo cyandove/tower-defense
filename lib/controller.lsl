@@ -63,6 +63,14 @@ integer CTRL = -2013;
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default — flip before pasting for verbose mode
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // GRID GEOMETRY
 // Set CELL_SIZE to match your intended in-world scale.
 // The controller prim's position is used as gGridOrigin.
@@ -126,6 +134,16 @@ integer gSetupPending = 0;    // objects rezzed but not yet registered
 
 
 // =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// =============================================================================
 // MAP DEFINITIONS
 // =============================================================================
 // Each loadMap_N() appends the full 300-entry map to gMap as 10 row literals.
@@ -168,7 +186,7 @@ loadMap(integer map_id)
     if (map_id == 1) entry_x = loadMap_1();
     else             entry_x = loadMap_1();   // fallback to map 1
 
-    llOwnerSay("[CTL] Map " + (string)map_id + " loaded. Mem: "
+    dbg("[CTL] Map " + (string)map_id + " loaded. Mem: "
         + (string)llGetFreeMemory() + "b");
 
     deriveWaypoints(entry_x, 0);
@@ -277,7 +295,7 @@ deriveWaypoints(integer entry_x, integer entry_y)
         }
     }
 
-    llOwnerSay("[CTL] Derived " + (string)llGetListLength(gWaypoints)
+    dbg("[CTL] Derived " + (string)llGetListLength(gWaypoints)
         + " waypoints.");
 }
 
@@ -328,13 +346,13 @@ rezAllObjects()
     vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
 
     llRezObject(INV_GM, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed GM near controller.");
+    dbg("[CTL] Rezzed GM near controller.");
 
     llRezObject(INV_HANDLER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed handler near controller.");
+    dbg("[CTL] Rezzed handler near controller.");
 
     llRezObject(INV_SPAWNER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
-    llOwnerSay("[CTL] Rezzed spawner near controller.");
+    dbg("[CTL] Rezzed spawner near controller.");
 
     gSetupPending = 3;   // waiting for GM + handler + spawner to register
     gLifecycle    = STATE_SETUP;
@@ -399,7 +417,7 @@ sendConfigs()
         + "|" + (string)target_handler.y
         + "|" + (string)target_handler.z);
 
-    llOwnerSay("[CTL] Configs sent. Waiting for ready confirmations...");
+    dbg("[CTL] Configs sent. Waiting for ready confirmations...");
 }
 
 
@@ -428,7 +446,7 @@ startSetup()
     gWaveNum    = 0;
     gEnemiesOut = 0;
 
-    llOwnerSay("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
+    dbg("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
     loadMap(1);
     rezAllObjects();
 }
@@ -436,7 +454,7 @@ startSetup()
 enterWaiting()
 {
     gLifecycle = STATE_WAITING;
-    llOwnerSay("[CTL] Ready. Touch to start wave 1.");
+    dbg("[CTL] Ready. Touch to start wave 1.");
     notifyAnimations();
 }
 
@@ -447,7 +465,7 @@ startNextWave()
     gEnemiesOut = count;
     gLifecycle  = STATE_WAVE;
 
-    llOwnerSay("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
+    dbg("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
     notifyAnimations();
 
     // Tell all registered spawners to start
@@ -458,7 +476,7 @@ onLifeLost()
 {
     gLives--;
     gEnemiesOut--;
-    llOwnerSay("[CTL] Life lost. Lives: " + (string)gLives
+    dbg("[CTL] Life lost. Lives: " + (string)gLives
         + "  Enemies remaining: " + (string)gEnemiesOut);
 
     if (gLives <= 0)
@@ -474,7 +492,7 @@ onEnemyKilled()
 {
     gScore++;
     gEnemiesOut--;
-    llOwnerSay("[CTL] Enemy killed. Score: " + (string)gScore
+    dbg("[CTL] Enemy killed. Score: " + (string)gScore
         + "  Enemies remaining: " + (string)gEnemiesOut);
     notifyAnimations();
     checkWaveClear();
@@ -487,7 +505,7 @@ checkWaveClear()
 
     gLifecycle    = STATE_WAVE_CLEAR;
     gWaveClearTimer = WAVE_CLEAR_DELAY;
-    llOwnerSay("[CTL] Wave " + (string)gWaveNum + " cleared!"
+    dbg("[CTL] Wave " + (string)gWaveNum + " cleared!"
         + "  Score: " + (string)gScore
         + "  Lives: " + (string)gLives
         + "  Next wave in " + (string)WAVE_CLEAR_DELAY + "s...");
@@ -496,7 +514,7 @@ checkWaveClear()
 gameOver()
 {
     gLifecycle = STATE_GAME_OVER;
-    llOwnerSay("[CTL] GAME OVER. Final score: " + (string)gScore
+    dbg("[CTL] GAME OVER. Final score: " + (string)gScore
         + "  Survived " + (string)(gWaveNum - 1) + " wave(s).");
     llSay(0, "Game over! Final score: " + (string)gScore);
     notifyAnimations();
@@ -526,7 +544,7 @@ resetGame()
     gScore     = 0;
     gWaveNum   = 0;
     gEnemiesOut = 0;
-    llOwnerSay("[CTL] Reset. Touch to set up a new game.");
+    dbg("[CTL] Reset. Touch to set up a new game.");
 }
 
 
@@ -545,7 +563,7 @@ handleControllerMessage(key sender, string msg)
     {
         gGM_Key = sender;
         gSetupPending--;
-        llOwnerSay("[CTL] GM online: " + (string)gGM_Key);
+        dbg("[CTL] GM online: " + (string)gGM_Key);
         // Tell GM who we are so it can forward registrations to us
         llRegionSayTo(gGM_Key, CTRL, "CTRL_HELLO");
         if (gSetupPending <= 0 && gHandler_Key != NULL_KEY && gSpawner_Key != NULL_KEY)
@@ -556,14 +574,14 @@ handleControllerMessage(key sender, string msg)
     // GM confirms it received and applied its config
     if (cmd == "GM_CONFIG_OK")
     {
-        llOwnerSay("[CTL] GM config acknowledged.");
+        dbg("[CTL] GM config acknowledged.");
         return;
     }
 
     // Spawner confirms it received and applied its config  -  game is ready
     if (cmd == "SPAWNER_CONFIG_OK")
     {
-        llOwnerSay("[CTL] Spawner config acknowledged.");
+        dbg("[CTL] Spawner config acknowledged.");
         enterWaiting();
         return;
     }
@@ -681,6 +699,18 @@ handleDebug(string msg)
         else
             llOwnerSay("[CTL] Not in a waitable state.");
     }
+    else if (msg == "/td ctl debug on")
+    {
+        gDebug = TRUE;
+        llSay(DEBUG_CHANNEL, "DEBUG_ON");
+        llOwnerSay("[CTL] Debug ON (all scripts).");
+    }
+    else if (msg == "/td ctl debug off")
+    {
+        gDebug = FALSE;
+        llSay(DEBUG_CHANNEL, "DEBUG_OFF");
+        llOwnerSay("[CTL] Debug OFF (all scripts).");
+    }
 }
 
 
@@ -693,8 +723,10 @@ default
     state_entry()
     {
         gLifecycle = STATE_IDLE;
-        llListen(CTRL, "", NULL_KEY, "");
-        llListen(0,    "", llGetOwner(), "");
+        gDebug     = DEBUG;
+        llListen(CTRL,          "", NULL_KEY,      "");
+        llListen(0,             "", llGetOwner(),  "");
+        llListen(DEBUG_CHANNEL, "", llGetOwner(),  "");
         llSetTimerEvent(1.0);
         llOwnerSay("[CTL] Controller ready. Touch to set up game.");
         llOwnerSay("[CTL] Mem: " + (string)llGetFreeMemory() + "b");
@@ -709,7 +741,7 @@ default
         else if (gLifecycle == STATE_WAITING)
             startNextWave();
         else
-            llOwnerSay("[CTL] State=" + (string)gLifecycle + "  -  nothing to do on touch.");
+            dbg("[CTL] State=" + (string)gLifecycle + "  -  nothing to do on touch.");
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -719,6 +751,11 @@ default
         else if (channel == 0 && id == llGetOwner()
                  && llGetSubString(msg, 0, 6) == "/td ctl")
             handleDebug(msg);
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
+        }
     }
 
     timer()

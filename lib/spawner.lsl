@@ -38,6 +38,14 @@
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS  -  must match game_manager.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
@@ -97,6 +105,16 @@ integer gGridY           = 0;
 
 
 // =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// =============================================================================
 // NOTECARD LOADING
 // =============================================================================
 
@@ -109,7 +127,7 @@ startNotecardLoad()
         afterConfigLoaded();
         return;
     }
-    llOwnerSay("[SP] Loading '" + SPAWNER_NOTECARD + "'...");
+    dbg("[SP] Loading '" + SPAWNER_NOTECARD + "'...");
     gCurrentLine   = 0;
     gNotecardQuery = llGetNotecardLine(SPAWNER_NOTECARD, gCurrentLine);
 }
@@ -132,7 +150,7 @@ integer parseConfigLine(string line)
 
 afterConfigLoaded()
 {
-    llOwnerSay("[SP] Config: " + gEnemyTypeName
+    dbg("[SP] Config: " + gEnemyTypeName
         + " hp=" + (string)gEnemyHealth
         + " spd=" + (string)gEnemySpeed
         + " count=" + (string)gEnemiesPerWave
@@ -150,14 +168,14 @@ discoverGM()
 {
     gDiscovering = TRUE;
     llSay(GM_DISCOVERY_CHANNEL, "GM_DISCOVER");
-    llOwnerSay("[SP] Broadcasting GM_DISCOVER...");
+    dbg("[SP] Broadcasting GM_DISCOVER...");
 }
 
 handleGMHere(key gm_key)
 {
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
-    llOwnerSay("[SP] Found GM: " + (string)gGM_KEY);
+    dbg("[SP] Found GM: " + (string)gGM_KEY);
     // Grid coords not yet known  -  will be sent in SPAWNER_CONFIG.
     // Register with (0,0) placeholder; controller sends real coords.
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
@@ -171,7 +189,7 @@ handleRegisterResponse(string msg)
     if (cmd == "REGISTER_OK")
     {
         gRegistered = TRUE;
-        llOwnerSay("[SP] Registered. Querying handler...");
+        dbg("[SP] Registered. Querying handler...");
         llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL, "SPAWNER_READY");
         queryHandler();
     }
@@ -190,14 +208,14 @@ handleHandlerInfo(string msg)
     key handler_key = (key)llList2String(parts, 1);
 
     if (handler_key == NULL_KEY)
-    { llOwnerSay("[SP] No handler yet. Will retry."); return; }
+    { dbg("[SP] No handler yet. Will retry."); return; }
 
     gHandlerKey = handler_key;
-    llOwnerSay("[SP] Handler: " + (string)gHandlerKey);
+    dbg("[SP] Handler: " + (string)gHandlerKey);
     llRegionSayTo(gGM_KEY, SPAWNER_CHANNEL,
         "SPAWNER_PAIRED|" + (string)gHandlerKey);
     // Don't set gPaired yet  -  wait for SPAWNER_CONFIG from controller
-    llOwnerSay("[SP] Waiting for controller config...");
+    dbg("[SP] Waiting for controller config...");
 }
 
 
@@ -225,7 +243,7 @@ handleSpawnerConfig(key sender, string msg)
     gConfigured     = TRUE;
     gPaired         = TRUE;
 
-    llOwnerSay("[SP] Config received. Entry=("
+    dbg("[SP] Config received. Entry=("
         + (string)gGridX + "," + (string)gGridY + ")"
         + " Waypoints=" + (string)llGetListLength(
             llParseString2List(gWaypointString, [";"], [])) + " pts");
@@ -239,7 +257,7 @@ handleSpawnerConfig(key sender, string msg)
     if (gWaveQueued)
     {
         gWaveQueued = FALSE;
-        llOwnerSay("[SP] Executing queued wave.");
+        dbg("[SP] Executing queued wave.");
         beginWave(gWaveTarget);
     }
 }
@@ -254,7 +272,7 @@ beginWave(integer enemy_count)
     gWaveTarget = enemy_count;
     if (gWaveTarget < 1) gWaveTarget = 1;
     gSpawnCount = 0;
-    llOwnerSay("[SP] Wave: spawning "
+    dbg("[SP] Wave: spawning "
         + (string)gWaveTarget + " " + gEnemyTypeName + "(s).");
     spawnEnemy();
     if (gWaveTarget > 1)
@@ -269,7 +287,7 @@ handleWaveStart(string msg)
 
     if (!gConfigured)
     {
-        llOwnerSay("[SP] WAVE_START before config  -  queuing.");
+        dbg("[SP] WAVE_START before config  -  queuing.");
         gWaveQueued = TRUE;
         gWaveTarget = count;
         return;
@@ -287,7 +305,7 @@ spawnEnemy()
     vector spawn_pos = llGetPos() + <0.0, 0.0, 0.5>;
     llRezObject(ENEMY_OBJECT_NAME, spawn_pos, ZERO_VECTOR, ZERO_ROTATION, 1);
     gSpawnCount++;
-    llOwnerSay("[SP] Spawned " + (string)gSpawnCount
+    dbg("[SP] Spawned " + (string)gSpawnCount
         + "/" + (string)gWaveTarget);
 }
 
@@ -317,14 +335,16 @@ default
 {
     state_entry()
     {
-        llOwnerSay("[SP] Spawner starting...");
+        gDebug = DEBUG;
+        dbg("[SP] Spawner starting...");
 
-        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
-        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
-        llListen(SPAWNER_CHANNEL,      "", NULL_KEY, "");
-        llListen(ENEMY_CHANNEL,        "", NULL_KEY, "");
-        llListen(CONTROLLER_CHANNEL,   "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY,     "");
+        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
+        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
+        llListen(SPAWNER_CHANNEL,      "", NULL_KEY,     "");
+        llListen(ENEMY_CHANNEL,        "", NULL_KEY,     "");
+        llListen(CONTROLLER_CHANNEL,   "", NULL_KEY,     "");
+        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
 
         startNotecardLoad();
     }
@@ -380,10 +400,15 @@ default
             else if (cmd == "WAVE_START")    handleWaveStart(msg);
             else if (cmd == "SHUTDOWN")
             {
-                llOwnerSay("[SP] Shutdown.");
+                dbg("[SP] Shutdown.");
                 llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
                 llDie();
             }
+        }
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
         }
     }
 

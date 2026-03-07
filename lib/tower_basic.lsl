@@ -47,6 +47,14 @@ integer ANIM_FIRE_MISS  = 102;
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS — must match game_manager.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
@@ -101,6 +109,16 @@ integer gConfigLoaded  = FALSE;
 
 
 // =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// =============================================================================
 // NOTECARD LOADING
 // =============================================================================
 
@@ -134,7 +152,7 @@ startNotecardLoad()
         return;
     }
 
-    llOwnerSay("[TW] Loading config from '" + gNotecardName + "'...");
+    dbg("[TW] Loading config from '" + gNotecardName + "'...");
     gCurrentLine   = 0;
     gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
 }
@@ -170,7 +188,7 @@ integer parseConfigLine(string line)
 
 afterConfigLoaded()
 {
-    llOwnerSay("[TW] Config loaded: " + gTowerTypeName
+    dbg("[TW] Config loaded: " + gTowerTypeName
         + " dmg=" + (string)gDamage
         + " range=" + (string)gTowerRange
         + " acc=" + (string)gAccuracy
@@ -190,14 +208,14 @@ discoverGM()
 {
     gDiscovering = TRUE;
     llSay(GM_DISCOVERY_CHANNEL, "GM_DISCOVER");
-    llOwnerSay("[TW] Broadcasting GM_DISCOVER...");
+    dbg("[TW] Broadcasting GM_DISCOVER...");
 }
 
 handleGMHere(key gm_key)
 {
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
-    llOwnerSay("[TW] Found GM: " + (string)gGM_KEY);
+    dbg("[TW] Found GM: " + (string)gGM_KEY);
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
         "REGISTER|" + (string)REG_TYPE_TOWER
         + "|" + (string)gGridX
@@ -220,7 +238,7 @@ handleRegisterResponse(string msg)
             gTowerPos = llGetPos();
         }
         llSetTimerEvent(0);
-        llOwnerSay("[TW] Registered: " + gTowerTypeName
+        dbg("[TW] Registered: " + gTowerTypeName
             + " at (" + (string)gGridX + "," + (string)gGridY + ")"
             + " range=" + (string)gTowerRange + "m");
         llSetTimerEvent(gAttackInterval);
@@ -297,7 +315,7 @@ integer resolveAttack(key target_key, vector target_pos)
     {
         llRegionSayTo(target_key, ENEMY_CHANNEL,
             "TAKE_DAMAGE|" + (string)gDamage);
-        llOwnerSay("[TW] HIT  dist=" + (string)((integer)dist)
+        dbg("[TW] HIT  dist=" + (string)((integer)dist)
             + "m chance=" + (string)((integer)(hit_chance * 100)) + "%"
             + " dmg=" + (string)((integer)gDamage));
         llMessageLinked(LINK_THIS, ANIM_FIRE_HIT,
@@ -306,7 +324,7 @@ integer resolveAttack(key target_key, vector target_pos)
     }
     else
     {
-        llOwnerSay("[TW] MISS dist=" + (string)((integer)dist)
+        dbg("[TW] MISS dist=" + (string)((integer)dist)
             + "m chance=" + (string)((integer)(hit_chance * 100)) + "%");
         llMessageLinked(LINK_THIS, ANIM_FIRE_MISS,
             (string)target_pos.x + "|" + (string)target_pos.y + "|" + (string)target_pos.z,
@@ -359,10 +377,12 @@ default
 {
     state_entry()
     {
-        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
-        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
-        llListen(TOWER_REPORT_CHANNEL, "", NULL_KEY, "");
+        gDebug = DEBUG;
+        llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY,     "");
+        llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
+        llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY,     "");
+        llListen(TOWER_REPORT_CHANNEL, "", NULL_KEY,     "");
+        llListen(DEBUG_CHANNEL,        "", llGetOwner(), "");
         // on_rez fires after state_entry and kicks off the startup sequence.
         // A manual script reset (no on_rez) starts as type 1 at (0,0).
     }
@@ -405,6 +425,11 @@ default
             if (llList2String(parts, 0) == "TARGET_RESPONSE")
                 handleTargetResponse(msg);
         }
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
+        }
     }
 
     timer()
@@ -440,7 +465,7 @@ default
         gCurrentLine   = 0;
         gTowerPos      = llGetPos();
 
-        llOwnerSay("[TW] Tower type=" + (string)gTowerTypeId
+        dbg("[TW] Tower type=" + (string)gTowerTypeId
             + " gx=" + (string)gGridX + " gy=" + (string)gGridY + " starting...");
 
         startNotecardLoad();

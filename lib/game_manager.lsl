@@ -48,6 +48,14 @@
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
 list    gRegistry        = [];   // [key, type, gx, gy, timestamp]  stride=5
@@ -62,6 +70,16 @@ key     gCtrl_Key        = NULL_KEY;
 vector  gGridOrigin      = ZERO_VECTOR;
 float   gGridCellSize    = 0.0;
 integer gConfigured      = FALSE;
+
+
+// =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
 
 
 // =============================================================================
@@ -123,7 +141,7 @@ rezTower(integer gx, integer gy, integer type_id)
     vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
     integer sp = type_id * 10000 + gx * 100 + gy;
     llRezObject(obj_name, rez_pos, ZERO_VECTOR, ZERO_ROTATION, sp);
-    llOwnerSay("[GM] Rezzed type=" + (string)type_id
+    dbg("[GM] Rezzed type=" + (string)type_id
         + " (" + (string)gx + "," + (string)gy + ")"
         + " sp=" + (string)sp);
 }
@@ -149,7 +167,7 @@ registerObject(key id, integer obj_type, integer gx, integer gy)
         return;
     }
     gRegistry += [(string)id, obj_type, gx, gy, llGetUnixTime()];
-    llOwnerSay("[REG] +" + (string)obj_type + " " + (string)id);
+    dbg("[REG] +" + (string)obj_type + " " + (string)id);
 
     // Notify controller of handler and spawner registrations
     // so it can track their keys for config delivery
@@ -180,7 +198,7 @@ deregisterObject(key id)
     if (obj_type == 3) removeSpawnerPairing(id);
     if (obj_type == 4) removePairingsForHandler(id);
 
-    llOwnerSay("[REG] -" + (string)obj_type + " " + (string)id);
+    dbg("[REG] -" + (string)obj_type + " " + (string)id);
 }
 
 integer registryCount()
@@ -254,7 +272,7 @@ cullStaleObjects()
         }
     }
     if (culled > 0)
-        llOwnerSay("[HB] Culled " + (string)culled
+        dbg("[HB] Culled " + (string)culled
             + ". Registry: " + (string)registryCount());
 }
 
@@ -467,13 +485,13 @@ handleSpawnerReport(key sender, string msg)
 
     if (cmd == "SPAWNER_READY")
     {
-        llOwnerSay("[SP] Ready: " + (string)sender);
+        dbg("[SP] Ready: " + (string)sender);
     }
     else if (cmd == "HANDLER_QUERY")
     {
         key handler_key = findRegisteredHandler();
         llRegionSayTo(sender, -2009, "HANDLER_INFO|" + (string)handler_key);
-        llOwnerSay("[SP] HANDLER_QUERY -> " + (string)handler_key);
+        dbg("[SP] HANDLER_QUERY -> " + (string)handler_key);
     }
     else if (cmd == "SPAWNER_PAIRED")
     {
@@ -486,7 +504,7 @@ handleSpawnerReport(key sender, string msg)
             return;
         }
         setSpawnerPairing(sender, handler_key);
-        llOwnerSay("[PAIR] " + (string)sender + " -> " + (string)handler_key);
+        dbg("[PAIR] " + (string)sender + " -> " + (string)handler_key);
     }
 }
 
@@ -525,7 +543,7 @@ denyPlacement(key handler, integer gx, integer gy, key avatar, string reason)
     llRegionSayTo(handler, -2008,
         "PLACEMENT_DENIED|" + (string)gx + "|" + (string)gy
         + "|" + (string)avatar + "|" + reason);
-    llOwnerSay("[PL] Denied " + reason
+    dbg("[PL] Denied " + reason
         + " (" + (string)gx + "," + (string)gy + ")");
 }
 
@@ -603,7 +621,7 @@ handleCellData(string msg)
     llRegionSayTo(handler, -2008,
         "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy
         + "|" + (string)avatar);
-    llOwnerSay("[PL] Reserved (" + (string)gx + "," + (string)gy
+    dbg("[PL] Reserved (" + (string)gx + "," + (string)gy
         + ") for " + llKey2Name(avatar));
 }
 
@@ -731,7 +749,7 @@ handleControllerMessage(key sender, string msg)
     if (cmd == "CTRL_HELLO")
     {
         gCtrl_Key = sender;
-        llOwnerSay("[GM] Controller registered: " + (string)gCtrl_Key);
+        dbg("[GM] Controller registered: " + (string)gCtrl_Key);
         // Replay any handler/spawner registrations that arrived before us
         integer i;
         integer n = llGetListLength(gRegistry) / 5;
@@ -763,7 +781,7 @@ handleControllerMessage(key sender, string msg)
                          (float)llList2String(parts, 7)>;
         llSetRegionPos(target);
 
-        llOwnerSay("[GM] Config received from controller. Grid origin="
+        dbg("[GM] Config received from controller. Grid origin="
             + (string)gGridOrigin + " cell=" + (string)gGridCellSize + "m");
         llRegionSayTo(gCtrl_Key, -2013, "GM_CONFIG_OK");
     }
@@ -773,7 +791,7 @@ handleControllerMessage(key sender, string msg)
     }
     else if (cmd == "SHUTDOWN")
     {
-        llOwnerSay("[GM] Shutdown received. Deregistering and dying.");
+        dbg("[GM] Shutdown received. Deregistering and dying.");
         llRegionSay(-2002, "DEREGISTER");
         llDie();
     }
@@ -848,27 +866,29 @@ default
 {
     state_entry()
     {
-        llOwnerSay("[GM] Starting. Waiting for controller config...");
+        gDebug = DEBUG;
+        dbg("[GM] Starting. Waiting for controller config...");
 
-        llListen(-2001, "", NULL_KEY, "");   // GM_REGISTER
-        llListen(-2002, "", NULL_KEY, "");   // GM_DEREGISTER
-        llListen(-2003, "", NULL_KEY, "");   // HEARTBEAT
-        llListen(-2004, "", NULL_KEY, "");   // PLACEMENT
-        llListen(-2005, "", NULL_KEY, "");   // TOWER_REPORT
-        llListen(-2006, "", NULL_KEY, "");   // ENEMY_REPORT
-        llListen(-2007, "", NULL_KEY, "");   // GM_DISCOVERY
-        llListen(-2009, "", NULL_KEY, "");   // SPAWNER
-        llListen(-2011, "", NULL_KEY, "");   // GRID_INFO
-        llListen(-2012, "", NULL_KEY, "");   // TOWER_PLACE
-        llListen(-2013, "", NULL_KEY, "");   // CONTROLLER
+        llListen(-2001,         "", NULL_KEY,     "");   // GM_REGISTER
+        llListen(-2002,         "", NULL_KEY,     "");   // GM_DEREGISTER
+        llListen(-2003,         "", NULL_KEY,     "");   // HEARTBEAT
+        llListen(-2004,         "", NULL_KEY,     "");   // PLACEMENT
+        llListen(-2005,         "", NULL_KEY,     "");   // TOWER_REPORT
+        llListen(-2006,         "", NULL_KEY,     "");   // ENEMY_REPORT
+        llListen(-2007,         "", NULL_KEY,     "");   // GM_DISCOVERY
+        llListen(-2009,         "", NULL_KEY,     "");   // SPAWNER
+        llListen(-2011,         "", NULL_KEY,     "");   // GRID_INFO
+        llListen(-2012,         "", NULL_KEY,     "");   // TOWER_PLACE
+        llListen(-2013,         "", NULL_KEY,     "");   // CONTROLLER
+        llListen(DEBUG_CHANNEL, "", llGetOwner(), "");   // DEBUG
 
         llSetTimerEvent(10);
 
         // Announce to controller  -  it may have rezzed us just now
         llSay(-2013, "GM_READY");
 
-        llOwnerSay("[GM] Key: " + (string)llGetKey());
-        llOwnerSay("[GM] Mem: " + (string)llGetFreeMemory() + "b");
+        dbg("[GM] Key: " + (string)llGetKey());
+        dbg("[GM] Mem: " + (string)llGetFreeMemory() + "b");
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -884,6 +904,11 @@ default
         else if (channel == -2011) handleGridInfoRequest(id, msg);
         else if (channel == -2012) handleTowerPlaceRequest(id, msg);
         else if (channel == -2013) handleControllerMessage(id, msg);
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
+        }
     }
 
     link_message(integer sender_num, integer num, string str, key id)

@@ -18,6 +18,14 @@
 
 
 // -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer DEBUG         = FALSE;   // compile-time default
+integer gDebug        = FALSE;   // runtime toggle
+integer DEBUG_CHANNEL = -2099;   // owner-only debug toggle broadcast
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL        = -2001;
@@ -64,6 +72,16 @@ list TOWER_LABELS = ["Basic", "Sniper"];
 
 
 // =============================================================================
+// DEBUG HELPER
+// =============================================================================
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// =============================================================================
 // GRID INITIALISATION
 // =============================================================================
 
@@ -86,14 +104,14 @@ discoverGM()
 {
     gDiscovering = TRUE;
     llSay(GM_DISCOVERY_CHANNEL, "GM_DISCOVER");
-    llOwnerSay("[PH] Broadcasting GM_DISCOVER...");
+    dbg("[PH] Broadcasting GM_DISCOVER...");
 }
 
 handleGMHere(key gm_key)
 {
     gGM_KEY      = gm_key;
     gDiscovering = FALSE;
-    llOwnerSay("[PH] Found GM: " + (string)gGM_KEY);
+    dbg("[PH] Found GM: " + (string)gGM_KEY);
     llRegionSayTo(gGM_KEY, GM_REGISTER_CHANNEL,
         "REGISTER|4|0|0"
         + "|" + (string)gGridOrigin.x
@@ -110,7 +128,7 @@ handleRegisterResponse(string msg)
     {
         gRegistered = TRUE;
         llSetTimerEvent(0);
-        llOwnerSay("[PH] Registered with GM.");
+        dbg("[PH] Registered with GM.");
     }
     else if (cmd == "REGISTER_REJECTED")
     {
@@ -145,7 +163,7 @@ handleGridInfoRequest(key sender, string msg)
         + "|" + (string)gGridOrigin.y
         + "|" + (string)gGridOrigin.z
         + "|" + (string)gCellSize);
-    llOwnerSay("[PH] Sent grid info to " + (string)spawner_key);
+    dbg("[PH] Sent grid info to " + (string)spawner_key);
 }
 
 
@@ -227,7 +245,7 @@ showTowerDialog(key avatar, integer gx, integer gy)
     integer handle = llListen(gDialogChannel, "", avatar, "");
     llDialog(avatar, prompt, TOWER_LABELS, gDialogChannel);
     addPendingDialog(avatar, gx, gy, handle);
-    llOwnerSay("[PH] Dialog -> " + llKey2Name(avatar)
+    dbg("[PH] Dialog -> " + llKey2Name(avatar)
         + " (" + (string)gx + "," + (string)gy + ")");
 }
 
@@ -248,7 +266,7 @@ handleDialogResponse(key avatar, string response)
     }
 
     removePendingDialog(avatar);
-    llOwnerSay("[PH] " + llKey2Name(avatar) + " chose type " + (string)type_id
+    dbg("[PH] " + llKey2Name(avatar) + " chose type " + (string)type_id
         + " (" + response + ") for (" + (string)gx + "," + (string)gy + ")");
 
     llRegionSayTo(gGM_KEY, TOWER_PLACE_CHANNEL,
@@ -300,18 +318,20 @@ default
 {
     state_entry()
     {
+        gDebug = DEBUG;
         initGridFromPrim();
         gDialogChannel = -(integer)("0x"
             + llGetSubString((string)llGetKey(), 0, 6));
 
-        llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY, "");
-        llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY, "");
-        llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY, "");
-        llListen(PLACEMENT_RESPONSE_CHANNEL, "", NULL_KEY, "");
-        llListen(GRID_INFO_CHANNEL,          "", NULL_KEY, "");
-        llListen(CONTROLLER_CHANNEL,         "", NULL_KEY, "");
+        llListen(GM_DISCOVERY_CHANNEL,       "", NULL_KEY,     "");
+        llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY,     "");
+        llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY,     "");
+        llListen(PLACEMENT_RESPONSE_CHANNEL, "", NULL_KEY,     "");
+        llListen(GRID_INFO_CHANNEL,          "", NULL_KEY,     "");
+        llListen(CONTROLLER_CHANNEL,         "", NULL_KEY,     "");
+        llListen(DEBUG_CHANNEL,              "", llGetOwner(), "");
 
-        llOwnerSay("[PH] Ready. Origin=" + (string)gGridOrigin
+        dbg("[PH] Ready. Origin=" + (string)gGridOrigin
             + " Cell=" + (string)gCellSize + "m");
 
         discoverGM();
@@ -360,7 +380,7 @@ default
                                  (float)llList2String(parts, 3)>;
                 llSetRegionPos(target);
                 initGridFromPrim();
-                llOwnerSay("[PH] Moved to grid centre. Origin=" + (string)gGridOrigin
+                dbg("[PH] Moved to grid centre. Origin=" + (string)gGridOrigin
                     + " Cell=" + (string)gCellSize + "m");
                 // Re-register to push corrected grid origin to GM
                 if (gGM_KEY != NULL_KEY)
@@ -373,11 +393,16 @@ default
             }
             else if (cmd == "SHUTDOWN")
             {
-                llOwnerSay("[PH] Shutdown.");
+                dbg("[PH] Shutdown.");
                 if (gGM_KEY != NULL_KEY)
                     llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
                 llDie();
             }
+        }
+        else if (channel == DEBUG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
         }
     }
 
@@ -391,7 +416,7 @@ default
         vector grid      = translateToGrid(touch_pos);
 
         if ((integer)grid.x == -1)
-        { llOwnerSay("[PH] Touch OOB at " + (string)touch_pos); return; }
+        { dbg("[PH] Touch OOB at " + (string)touch_pos); return; }
 
         if (!gRegistered)
         { llRegionSayTo(avatar, 0, "Tower placement not ready yet."); return; }
@@ -399,7 +424,7 @@ default
         integer grid_x = (integer)grid.x;
         integer grid_y = (integer)grid.y;
 
-        llOwnerSay("[PH] " + llKey2Name(avatar)
+        dbg("[PH] " + llKey2Name(avatar)
             + " -> (" + (string)grid_x + "," + (string)grid_y + ")");
 
         llRegionSayTo(gGM_KEY, PLACEMENT_CHANNEL,
