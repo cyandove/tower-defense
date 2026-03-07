@@ -344,25 +344,12 @@ default
 {
     state_entry()
     {
-        // start_param encodes: type_id * 10000 + gx * 100 + gy
-        // On manual rez (start_param=0), default to type 1 at (0,0).
-        integer sp = llGetStartParameter();
-        gTowerTypeId = sp / 10000;
-        gGridX       = (sp % 10000) / 100;
-        gGridY       = sp % 100;
-        if (gTowerTypeId < 1) gTowerTypeId = 1;
-
-        llOwnerSay("[TW] Tower type=" + (string)gTowerTypeId
-            + " gx=" + (string)gGridX + " gy=" + (string)gGridY + " starting...");
-        gTowerPos = llGetPos();
-
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY, "");
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY, "");
         llListen(HEARTBEAT_CHANNEL,    "", NULL_KEY, "");
         llListen(TOWER_REPORT_CHANNEL, "", NULL_KEY, "");
-
-        // Notecard loading happens first — afterConfigLoaded() triggers discovery
-        startNotecardLoad();
+        // on_rez fires after state_entry and kicks off the startup sequence.
+        // A manual script reset (no on_rez) starts as type 1 at (0,0).
     }
 
     dataserver(key query_id, string data)
@@ -421,6 +408,27 @@ default
 
     on_rez(integer start_param)
     {
-        llResetScript();
+        // Decode start_param here — reliable, no reset needed.
+        // Encoding: type_id * 10000 + gx * 100 + gy
+        integer sp = start_param;
+        gTowerTypeId = sp / 10000;
+        gGridX       = (sp % 10000) / 100;
+        gGridY       = sp % 100;
+        if (gTowerTypeId < 1) gTowerTypeId = 1;
+
+        // Reset runtime state for clean re-rez without llResetScript().
+        gGM_KEY        = NULL_KEY;
+        gRegistered    = FALSE;
+        gDiscovering   = FALSE;
+        gConfigLoaded  = FALSE;
+        gNotecardQuery = NULL_KEY;
+        gCurrentLine   = 0;
+        gTowerPos      = llGetPos();
+
+        llOwnerSay("[TW] Tower type=" + (string)gTowerTypeId
+            + " gx=" + (string)gGridX + " gy=" + (string)gGridY + " starting...");
+
+        startNotecardLoad();
+        llSetTimerEvent(RETRY_INTERVAL);
     }
 }
