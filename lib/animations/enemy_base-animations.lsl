@@ -45,7 +45,7 @@ updateHealthBar(float health)
     if (pct < 0.0) pct = 0.0;
     if (pct > 1.0) pct = 1.0;
     vector color = <1.0 - pct, pct, 0.0>;
-    llSetText((string)(integer)health + " HP", color, 1.0);
+    llSetText((string)((integer)health) + " HP", color, 1.0);
 }
 
 
