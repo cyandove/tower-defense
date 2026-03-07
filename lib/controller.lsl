@@ -51,6 +51,12 @@
 
 
 // -----------------------------------------------------------------------------
+// ANIMATION EVENT IDS — shared with controller-animations.lsl
+// -----------------------------------------------------------------------------
+integer ANIM_STATE = 300;
+
+
+// -----------------------------------------------------------------------------
 // CONTROLLER CHANNEL
 // -----------------------------------------------------------------------------
 integer CTRL = -2013;
@@ -398,6 +404,19 @@ sendConfigs()
 
 
 // =============================================================================
+// ANIMATION NOTIFICATION
+// =============================================================================
+
+notifyAnimations()
+{
+    llMessageLinked(LINK_THIS, ANIM_STATE,
+        (string)gLifecycle + "|" + (string)gWaveNum
+        + "|" + (string)gLives + "|" + (string)gScore,
+        NULL_KEY);
+}
+
+
+// =============================================================================
 // GAME LIFECYCLE
 // =============================================================================
 
@@ -418,6 +437,7 @@ enterWaiting()
 {
     gLifecycle = STATE_WAITING;
     llOwnerSay("[CTL] Ready. Touch to start wave 1.");
+    notifyAnimations();
 }
 
 startNextWave()
@@ -428,6 +448,7 @@ startNextWave()
     gLifecycle  = STATE_WAVE;
 
     llOwnerSay("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
+    notifyAnimations();
 
     // Tell all registered spawners to start
     llRegionSayTo(gSpawner_Key, CTRL, "WAVE_START|" + (string)count);
@@ -445,6 +466,7 @@ onLifeLost()
         gameOver();
         return;
     }
+    notifyAnimations();
     checkWaveClear();
 }
 
@@ -454,6 +476,7 @@ onEnemyKilled()
     gEnemiesOut--;
     llOwnerSay("[CTL] Enemy killed. Score: " + (string)gScore
         + "  Enemies remaining: " + (string)gEnemiesOut);
+    notifyAnimations();
     checkWaveClear();
 }
 
@@ -476,6 +499,7 @@ gameOver()
     llOwnerSay("[CTL] GAME OVER. Final score: " + (string)gScore
         + "  Survived " + (string)(gWaveNum - 1) + " wave(s).");
     llSay(0, "Game over! Final score: " + (string)gScore);
+    notifyAnimations();
     cleanupObjects();
 }
 

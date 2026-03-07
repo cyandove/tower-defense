@@ -17,6 +17,14 @@
 
 
 // -----------------------------------------------------------------------------
+// ANIMATION EVENT IDS — shared with enemy_base-animations.lsl
+// -----------------------------------------------------------------------------
+integer ANIM_SPAWNED     = 200;
+integer ANIM_TAKE_DAMAGE = 201;
+integer ANIM_DEATH       = 202;
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS — must match game_manager.lsl and spawner.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
@@ -59,6 +67,7 @@ list    gWaypoints       = [];    // list of vectors, parsed from config
 integer gCurrentWaypoint = 0;    // index into gWaypoints
 float   gSpeed           = 2.0;
 float   gHealth          = 100.0;
+float   gMaxHealth       = 100.0; // set once from config, for health bar colour gradient
 integer gConfigReceived  = FALSE;
 
 
@@ -132,6 +141,7 @@ onDeath()
         llRegionSayTo(gGM_KEY, GM_DEREGISTER_CHANNEL, "DEREGISTER");
     }
 
+    llMessageLinked(LINK_THIS, ANIM_DEATH, "", NULL_KEY);
     llSleep(0.5);
     llDie();
 }
@@ -242,9 +252,11 @@ state active
                 }
                 gSpeed           = (float)llList2String(parts, 1);
                 gHealth          = (float)llList2String(parts, 2);
+                gMaxHealth       = gHealth;
                 gWaypoints       = parseWaypoints(llList2String(parts, 3));
                 gCurrentWaypoint = 0;
                 gConfigReceived  = TRUE;
+                llMessageLinked(LINK_THIS, ANIM_SPAWNED, (string)gHealth, NULL_KEY);
 
                 llOwnerSay("[EN] Config received. Speed=" + (string)gSpeed
                     + " Health=" + (string)gHealth
@@ -271,6 +283,8 @@ state active
 
                 llOwnerSay("[EN] Hit! -" + (string)((integer)amount)
                     + " hp, remaining: " + (string)((integer)gHealth));
+
+                llMessageLinked(LINK_THIS, ANIM_TAKE_DAMAGE, (string)gHealth, NULL_KEY);
 
                 if (gHealth <= 0.0)
                     onDeath();

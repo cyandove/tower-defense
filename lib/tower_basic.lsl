@@ -39,6 +39,14 @@
 
 
 // -----------------------------------------------------------------------------
+// ANIMATION EVENT IDS — shared with tower_basic-animations.lsl
+// -----------------------------------------------------------------------------
+integer ANIM_REGISTERED = 100;
+integer ANIM_FIRE_HIT   = 101;
+integer ANIM_FIRE_MISS  = 102;
+
+
+// -----------------------------------------------------------------------------
 // CHANNEL CONSTANTS — must match game_manager.lsl
 // -----------------------------------------------------------------------------
 integer GM_REGISTER_CHANNEL   = -2001;
@@ -216,6 +224,7 @@ handleRegisterResponse(string msg)
             + " at (" + (string)gGridX + "," + (string)gGridY + ")"
             + " range=" + (string)gTowerRange + "m");
         llSetTimerEvent(gAttackInterval);
+        llMessageLinked(LINK_THIS, ANIM_REGISTERED, "", NULL_KEY);
     }
     else if (cmd == "REGISTER_REJECTED")
     {
@@ -291,11 +300,17 @@ integer resolveAttack(key target_key, vector target_pos)
         llOwnerSay("[TW] HIT  dist=" + (string)((integer)dist)
             + "m chance=" + (string)((integer)(hit_chance * 100)) + "%"
             + " dmg=" + (string)((integer)gDamage));
+        llMessageLinked(LINK_THIS, ANIM_FIRE_HIT,
+            (string)target_pos.x + "|" + (string)target_pos.y + "|" + (string)target_pos.z,
+            target_key);
     }
     else
     {
         llOwnerSay("[TW] MISS dist=" + (string)((integer)dist)
             + "m chance=" + (string)((integer)(hit_chance * 100)) + "%");
+        llMessageLinked(LINK_THIS, ANIM_FIRE_MISS,
+            (string)target_pos.x + "|" + (string)target_pos.y + "|" + (string)target_pos.z,
+            NULL_KEY);
     }
 
     return hit;
