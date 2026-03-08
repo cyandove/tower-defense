@@ -14,8 +14,8 @@ The game runs as a set of cooperating scripts, each living in its own prim. Only
 | `game_manager.lsl` | GameManager | Registry, routing, targeting, placement validation |
 | `spawner.lsl` | Spawner | Enemy spawning, wave execution |
 | `placement_handler.lsl` | PlacementHandler | Touch-to-grid translation, tower selection dialog |
-| `tower_basic.lsl` | Tower | Attack cycle, hit resolution |
-| `enemy_base.lsl` | Enemy | Waypoint movement, damage handling |
+| `tower.lsl` | Tower | Attack cycle, hit resolution |
+| `enemy.lsl` | Enemy | Waypoint movement, damage handling |
 
 ---
 
@@ -49,7 +49,7 @@ The GameManager prim's inventory must contain one object for each tower type. By
 
 | Inventory item | Script inside |
 |---|---|
-| `Tower` | `tower_basic.lsl` |
+| `Tower` | `tower.lsl` |
 
 If you add tower types with distinct object names (see [Adding a custom tower type](#adding-a-custom-tower-type)), add a corresponding object for each name.
 
@@ -59,7 +59,7 @@ The Spawner prim's inventory must contain:
 
 | Inventory item | Script inside |
 |---|---|
-| `Enemy` | `enemy_base.lsl` |
+| `Enemy` | `enemy.lsl` |
 | `spawner.cfg` | Enemy stats notecard |
 
 ### Step 4 — Prepare the Tower prim
@@ -129,7 +129,7 @@ attack_interval=3.5
 targeting_strategy=0
 ```
 
-### 2. Register the notecard in `tower_basic.lsl`
+### 2. Register the notecard in `tower.lsl`
 
 Add the notecard filename to the `NOTECARD_NAMES` list. The list index is `type_id - 1`, so append to give the next available ID:
 
@@ -172,7 +172,7 @@ string towerObjName(integer type_id)
 }
 ```
 
-When using distinct object names, add each named object to the GameManager prim's inventory. All objects must still contain `tower_basic.lsl` — the type ID encoded in `start_param` at rez time determines which notecard is loaded, regardless of which object was rezzed.
+When using distinct object names, add each named object to the GameManager prim's inventory. All objects must still contain `tower.lsl` — the type ID encoded in `start_param` at rez time determines which notecard is loaded, regardless of which object was rezzed.
 
 ### 4. Add the label to `placement_handler.lsl`
 
@@ -190,11 +190,11 @@ This label appears as a button in the `llDialog` tower selection popup. Note tha
 | File | Change |
 |---|---|
 | `lib/config/tower_<name>.cfg` | Create notecard with stat keys |
-| `tower_basic.lsl` — `NOTECARD_NAMES` | Append `"tower_<name>.cfg"` |
+| `tower.lsl` — `NOTECARD_NAMES` | Append `"tower_<name>.cfg"` |
 | `game_manager.lsl` — `towerObjName()` | Add `if (type_id == N) return "<ObjName>";` |
 | `game_manager.lsl` — `towerLabel()` | Add `if (type_id == N) return "<Label>";` |
 | `placement_handler.lsl` — `TOWER_LABELS` | Append `"<Label>"` |
-| GameManager inventory | Add object named `<ObjName>` containing `tower_basic.lsl` |
+| GameManager inventory | Add object named `<ObjName>` containing `tower.lsl` |
 
 ---
 
