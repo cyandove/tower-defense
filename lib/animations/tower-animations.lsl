@@ -33,7 +33,11 @@ key SOUND_MISS = NULL_KEY;
 // -----------------------------------------------------------------------------
 integer gGlowing  = FALSE;
 
-vector  gNormalScale;         // captured at state_entry before flattening
+// llScaleByFactor operates on the whole linkset uniformly.
+// INITIAL_FACTOR must keep all prims above SL's 0.01 m minimum.
+float   INITIAL_FACTOR = 0.1;  // start at 10% of normal size
+float   gCurrentFactor;        // tracks current scale relative to original
+
 integer gRising   = FALSE;    // TRUE while spawn-rise animation is playing
 integer gRiseStep = 0;
 
@@ -73,19 +77,18 @@ default
 {
     state_entry()
     {
-        // Capture the prim's authored scale before we touch it
-        gNormalScale = llGetScale();
-        // Hide and flatten — tower is invisible until it reaches its grid cell
-        llSetAlpha(0.0, ALL_SIDES);
-        llSetScale(<gNormalScale.x, gNormalScale.y, 0.01>);
+        // Hide entire linkset and shrink to INITIAL_FACTOR of normal size
+        llSetLinkAlpha(LINK_SET, 0.0, ALL_SIDES);
+        llScaleByFactor(INITIAL_FACTOR);
+        gCurrentFactor = INITIAL_FACTOR;
     }
 
     link_message(integer sender_num, integer num, string str, key id)
     {
         if (num == ANIM_REGISTERED)
         {
-            // Tower has teleported to its grid cell — reveal and rise
-            llSetAlpha(1.0, ALL_SIDES);
+            // Tower has teleported to its grid cell — reveal entire linkset and rise
+            llSetLinkAlpha(LINK_SET, 1.0, ALL_SIDES);
             llSetColor(<0.8, 0.8, 0.8>, ALL_SIDES);
             llSetPrimitiveParams([PRIM_GLOW, ALL_SIDES, 0.0]);
             gRising   = TRUE;
@@ -116,13 +119,22 @@ default
         if (gRising)
         {
             gRiseStep++;
-            float frac = (float)gRiseStep / (float)RISE_STEPS;
-            llSetScale(<gNormalScale.x, gNormalScale.y, gNormalScale.z * frac>);
+            float targetFactor;
             if (gRiseStep >= RISE_STEPS)
             {
-                llSetScale(gNormalScale);
+                targetFactor = 1.0;
                 gRising = FALSE;
-                // If a fire-hit glow was triggered during rise, clear it now
+            }
+            else
+            {
+                targetFactor = INITIAL_FACTOR
+                    + (1.0 - INITIAL_FACTOR) * ((float)gRiseStep / (float)RISE_STEPS);
+            }
+            llScaleByFactor(targetFactor / gCurrentFactor);
+            gCurrentFactor = targetFactor;
+
+            if (!gRising)
+            {
                 if (gGlowing)
                     llSetTimerEvent(0.15);
                 else
