@@ -90,8 +90,8 @@ dbg(string msg)
 
 string towerObjName(integer type_id)
 {
-    if (type_id == 1) return "Tower";
-    if (type_id == 2) return "Tower";
+    if (type_id == 1) return "TowerBasic";
+    if (type_id == 2) return "TowerSniper";
     return "";
 }
 
