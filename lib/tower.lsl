@@ -1,5 +1,5 @@
 // =============================================================================
-// tower_basic.lsl
+// tower.lsl
 // Tower Defense — Basic Tower, Phase 6
 // =============================================================================
 // PHASE 6 CHANGES:
@@ -39,7 +39,7 @@
 
 
 // -----------------------------------------------------------------------------
-// ANIMATION EVENT IDS — shared with tower_basic-animations.lsl
+// ANIMATION EVENT IDS — shared with tower-animations.lsl
 // -----------------------------------------------------------------------------
 integer ANIM_REGISTERED = 100;
 integer ANIM_FIRE_HIT   = 101;

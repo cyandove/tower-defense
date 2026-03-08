@@ -1,9 +1,9 @@
 // =============================================================================
-// tower_basic-animations.lsl
+// tower-animations.lsl
 // Tower Defense — Tower Animation Layer, Phase 8
 //
-// Drop this script into a tower prim alongside tower_basic.lsl.
-// Reacts to llMessageLinked events from tower_basic.lsl — no game logic here.
+// Drop this script into a tower prim alongside tower.lsl.
+// Reacts to llMessageLinked events from tower.lsl — no game logic here.
 // Can be removed without affecting game behaviour.
 //
 // Events handled:
@@ -14,7 +14,7 @@
 
 
 // -----------------------------------------------------------------------------
-// ANIMATION EVENT IDS — must match tower_basic.lsl
+// ANIMATION EVENT IDS — must match tower.lsl
 // -----------------------------------------------------------------------------
 integer ANIM_REGISTERED = 100;
 integer ANIM_FIRE_HIT   = 101;

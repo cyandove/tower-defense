@@ -1,9 +1,9 @@
 // =============================================================================
-// enemy_base-animations.lsl
+// enemy-animations.lsl
 // Tower Defense — Enemy Animation Layer, Phase 8
 //
-// Drop this script into an enemy prim alongside enemy_base.lsl.
-// Reacts to llMessageLinked events from enemy_base.lsl — no game logic here.
+// Drop this script into an enemy prim alongside enemy.lsl.
+// Reacts to llMessageLinked events from enemy.lsl — no game logic here.
 // Can be removed without affecting game behaviour.
 //
 // Events handled:
@@ -14,7 +14,7 @@
 
 
 // -----------------------------------------------------------------------------
-// ANIMATION EVENT IDS — must match enemy_base.lsl
+// ANIMATION EVENT IDS — must match enemy.lsl
 // -----------------------------------------------------------------------------
 integer ANIM_SPAWNED     = 200;
 integer ANIM_TAKE_DAMAGE = 201;

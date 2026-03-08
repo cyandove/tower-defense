@@ -29,9 +29,9 @@ The game runs as a multi-script system. Each script lives in its own prim.
 
 **Placement Handler** (`placement_handler.lsl`) — a flat prim covering the grid. Translates player touch coordinates to grid cells, runs the `llDialog` tower selection UI, and sends `PLACEMENT_REQUEST` to the GM.
 
-**Tower** (`tower_basic.lsl`) — reads its config from a notecard (type determined by `start_param` at rez). Requests a target from the GM each fire tick; resolves hit/miss locally using `calcHitChance()`; sends damage directly to the enemy prim.
+**Tower** (`tower.lsl`) — reads its config from a notecard (type determined by `start_param` at rez). Requests a target from the GM each fire tick; resolves hit/miss locally using `calcHitChance()`; sends damage directly to the enemy prim.
 
-**Enemy** (`enemy_base.lsl`) — moves along waypoints received at rez. Reports position to the GM every ~0.5 s. On reaching the exit sends `ENEMY_ARRIVED`; on death sends `ENEMY_KILLED`. Both events propagate to the controller via the GM.
+**Enemy** (`enemy.lsl`) — moves along waypoints received at rez. Reports position to the GM every ~0.5 s. On reaching the exit sends `ENEMY_ARRIVED`; on death sends `ENEMY_KILLED`. Both events propagate to the controller via the GM.
 
 ## Channel Map
 
@@ -55,7 +55,7 @@ All channels are negative integers to avoid public chat collision.
 
 ## Config Notecards
 
-Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments. The tower script maps `start_param` (type ID) to a notecard name via the `NOTECARD_NAMES` list. Adding a new tower type requires: a new `.cfg` file, an entry in `NOTECARD_NAMES` in `tower_basic.lsl`, and a branch in the GM's `towerObjName()` / `towerLabel()` functions.
+Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments. The tower script maps `start_param` (type ID) to a notecard name via the `NOTECARD_NAMES` list. Adding a new tower type requires: a new `.cfg` file, an entry in `NOTECARD_NAMES` in `tower.lsl`, and a branch in the GM's `towerObjName()` / `towerLabel()` functions.
 
 ## Combat Model
 

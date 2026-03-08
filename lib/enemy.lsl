@@ -1,5 +1,5 @@
 // =============================================================================
-// enemy_base.lsl
+// enemy.lsl
 // Tower Defense Enemy — Phase 4
 //
 // SETUP:
@@ -17,7 +17,7 @@
 
 
 // -----------------------------------------------------------------------------
-// ANIMATION EVENT IDS — shared with enemy_base-animations.lsl
+// ANIMATION EVENT IDS — shared with enemy-animations.lsl
 // -----------------------------------------------------------------------------
 integer ANIM_SPAWNED     = 200;
 integer ANIM_TAKE_DAMAGE = 201;
