@@ -31,7 +31,14 @@ key SOUND_MISS = NULL_KEY;
 // -----------------------------------------------------------------------------
 // STATE
 // -----------------------------------------------------------------------------
-integer gGlowing = FALSE;
+integer gGlowing  = FALSE;
+
+vector  gNormalScale;         // captured at state_entry before flattening
+integer gRising   = FALSE;    // TRUE while spawn-rise animation is playing
+integer gRiseStep = 0;
+
+integer RISE_STEPS    = 10;
+float   RISE_INTERVAL = 0.05;  // 10 steps × 0.05 s = 0.5 s total
 
 
 // =============================================================================
@@ -48,7 +55,7 @@ faceTarget(vector target_pos)
         llSetRot(llRotBetween(<1.0, 0.0, 0.0>, dir));
 }
 
-// Parse a "|"-delimited position string produced by tower_basic.lsl.
+// Parse a "|"-delimited position string produced by tower.lsl.
 vector parsePos(string s)
 {
     list parts = llParseString2List(s, ["|"], []);
@@ -64,13 +71,26 @@ vector parsePos(string s)
 
 default
 {
+    state_entry()
+    {
+        // Capture the prim's authored scale before we touch it
+        gNormalScale = llGetScale();
+        // Hide and flatten — tower is invisible until it reaches its grid cell
+        llSetAlpha(0.0, ALL_SIDES);
+        llSetScale(<gNormalScale.x, gNormalScale.y, 0.01>);
+    }
+
     link_message(integer sender_num, integer num, string str, key id)
     {
         if (num == ANIM_REGISTERED)
         {
-            // Initialise appearance: neutral colour, no glow
+            // Tower has teleported to its grid cell — reveal and rise
+            llSetAlpha(1.0, ALL_SIDES);
             llSetColor(<0.8, 0.8, 0.8>, ALL_SIDES);
             llSetPrimitiveParams([PRIM_GLOW, ALL_SIDES, 0.0]);
+            gRising   = TRUE;
+            gRiseStep = 0;
+            llSetTimerEvent(RISE_INTERVAL);
         }
         else if (num == ANIM_FIRE_HIT)
         {
@@ -80,7 +100,8 @@ default
             gGlowing = TRUE;
             if (SOUND_FIRE != NULL_KEY)
                 llPlaySound(SOUND_FIRE, 1.0);
-            llSetTimerEvent(0.15);
+            if (!gRising)
+                llSetTimerEvent(0.15);
         }
         else if (num == ANIM_FIRE_MISS)
         {
@@ -92,6 +113,24 @@ default
 
     timer()
     {
+        if (gRising)
+        {
+            gRiseStep++;
+            float frac = (float)gRiseStep / (float)RISE_STEPS;
+            llSetScale(<gNormalScale.x, gNormalScale.y, gNormalScale.z * frac>);
+            if (gRiseStep >= RISE_STEPS)
+            {
+                llSetScale(gNormalScale);
+                gRising = FALSE;
+                // If a fire-hit glow was triggered during rise, clear it now
+                if (gGlowing)
+                    llSetTimerEvent(0.15);
+                else
+                    llSetTimerEvent(0);
+            }
+            return;
+        }
+
         // One-shot glow reset after ANIM_FIRE_HIT flash
         if (gGlowing)
         {
