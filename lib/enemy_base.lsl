@@ -211,9 +211,9 @@ state active
         gDebug = DEBUG;
         dbg("[EN] Awake. Discovering GM...");
 
-        // KFM requires non-physical objects with a simple physics shape
+        // KFM requires non-physical objects with a simple physics shape on all prims
         llSetStatus(STATUS_PHYSICS, FALSE);
-        llSetPrimitiveParams([PRIM_PHYSICS_SHAPE_TYPE, PRIM_PHYSICS_SHAPE_CONVEX]);
+        llSetLinkPrimitiveParamsFast(LINK_SET, [PRIM_PHYSICS_SHAPE_TYPE, PRIM_PHYSICS_SHAPE_NONE]);
 
         llListen(GM_DISCOVERY_CHANNEL, "", NULL_KEY,     "");
         llListen(GM_REGISTER_CHANNEL,  "", NULL_KEY,     "");
