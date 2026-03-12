@@ -84,7 +84,16 @@ default
 
     on_rez(integer start_param)
     {
-        if (start_param == 0) return;
+        if (start_param == 0)
+        {
+            // Rezzed from inventory manually — restore scale to 1.0x in case a
+            // previous animation session left the object at a wrong scale.
+            if (gCurrentFactor > 0.0 && gCurrentFactor != 1.0)
+                llScaleByFactor(1.0 / gCurrentFactor);
+            gCurrentFactor = 1.0;
+            llSetLinkAlpha(LINK_SET, 1.0, ALL_SIDES);
+            return;
+        }
         // Rezzed by GM — hide and shrink until registered and in position
         gCurrentFactor = INITIAL_FACTOR;
         llSetLinkAlpha(LINK_SET, 0.0, ALL_SIDES);
