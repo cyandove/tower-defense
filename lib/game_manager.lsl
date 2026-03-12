@@ -932,6 +932,14 @@ default
         if (!gConfigured) return;
         sendHeartbeat();
         cullStaleObjects();
+
+        // Timeout stale pending placement query (>10s)
+        if (pendingQueryActive()
+            && llList2Integer(gPendingQuery, 4) < llGetUnixTime() - 10)
+        {
+            llOwnerSay("[PL] Pending query timed out");
+            clearPendingQuery();
+        }
     }
 
     on_rez(integer start_param)
