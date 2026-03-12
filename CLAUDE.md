@@ -55,7 +55,9 @@ All channels are negative integers to avoid public chat collision.
 
 ## Config Notecards
 
-Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments. The tower script maps `start_param` (type ID) to a notecard name via the `NOTECARD_NAMES` list. Adding a new tower type requires: a new `.cfg` file, an entry in `NOTECARD_NAMES` in `tower.lsl`, and a branch in the GM's `towerObjName()` / `towerLabel()` functions.
+Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments.
+
+**`tower_types.cfg`** is the central tower type registry, shared across the GM, tower, and placement handler. Format is pipe-delimited: `type_id|object_name|label|notecard`. Adding a new tower type requires only: a new stats `.cfg` file and a new line in `tower_types.cfg`. The GM reads it to look up object names and labels; the tower reads it to find its stats notecard; the GM sends labels to the placement handler at runtime.
 
 ## Combat Model
 

@@ -71,6 +71,13 @@ vector  gGridOrigin      = ZERO_VECTOR;
 float   gGridCellSize    = 0.0;
 integer gConfigured      = FALSE;
 
+// Tower type registry — loaded from tower_types.cfg notecard
+list    gTowerTypes       = [];   // [type_id, obj_name, label, notecard] stride=4
+integer gTypesLoaded      = FALSE;
+integer gGmConfigOk       = FALSE;
+key     gTypesQuery       = NULL_KEY;
+integer gTypesLine        = 0;
+
 
 // =============================================================================
 // DEBUG HELPER
@@ -83,23 +90,67 @@ dbg(string msg)
 
 
 // =============================================================================
-// TOWER TYPE REGISTRY
-// Add a branch in each function for each new tower type.
-// type_id matches start_param passed to llRezObject.
+// TOWER TYPE REGISTRY  — loaded from tower_types.cfg notecard
+// gTowerTypes stride=4: [type_id, obj_name, label, notecard]
 // =============================================================================
 
 string towerObjName(integer type_id)
 {
-    if (type_id == 1) return "TowerBasic";
-    if (type_id == 2) return "TowerSniper";
-    return "";
+    integer idx = llListFindList(gTowerTypes, [type_id]);
+    if (idx == -1) return "";
+    return llList2String(gTowerTypes, idx + 1);
 }
 
 string towerLabel(integer type_id)
 {
-    if (type_id == 1) return "Basic";
-    if (type_id == 2) return "Sniper";
-    return "";
+    integer idx = llListFindList(gTowerTypes, [type_id]);
+    if (idx == -1) return "";
+    return llList2String(gTowerTypes, idx + 2);
+}
+
+startTypesLoad()
+{
+    if (llGetInventoryType("tower_types.cfg") == INVENTORY_NONE)
+    {
+        llOwnerSay("[GM] tower_types.cfg not found.");
+        return;
+    }
+    gTypesLine = 0;
+    gTypesQuery = llGetNotecardLine("tower_types.cfg", gTypesLine);
+}
+
+parseTypesLine(string line)
+{
+    if (line == "" || llGetSubString(line, 0, 0) == "#") return;
+    list fields = llParseString2List(line, ["|"], []);
+    if (llGetListLength(fields) < 4) return;
+    gTowerTypes += [(integer)llList2String(fields, 0),
+                    llList2String(fields, 1),
+                    llList2String(fields, 2),
+                    llList2String(fields, 3)];
+}
+
+onTypesLoaded()
+{
+    gTypesLoaded = TRUE;
+    dbg("[GM] tower_types.cfg loaded: "
+        + (string)(llGetListLength(gTowerTypes) / 4) + " types");
+    if (gGmConfigOk) gConfigured = TRUE;
+    sendTowerLabels();
+}
+
+sendTowerLabels()
+{
+    if (!gTypesLoaded) return;
+    key handler = findRegisteredHandler();
+    if (handler == NULL_KEY) return;
+    string labels = "TOWER_LABELS";
+    integer count = llGetListLength(gTowerTypes) / 4;
+    integer i;
+    for (i = 0; i < count; i++)
+        labels += "|" + llList2String(gTowerTypes, i * 4 + 2);
+    llRegionSayTo(handler, -2008, labels);
+    dbg("[GM] Sent tower labels to handler");
 }
 
 
@@ -717,6 +768,7 @@ handleRegisterMessage(key sender, string msg)
     {
         llRegionSayTo(sender, -2001, "REGISTER_OK|" + (string)obj_type);
     }
+    if (obj_type == 4) sendTowerLabels();
 }
 
 handleDeregisterMessage(key sender, string msg)
@@ -773,7 +825,8 @@ handleControllerMessage(key sender, string msg)
                          (float)llList2String(parts, 2),
                          (float)llList2String(parts, 3)>;
         gGridCellSize = (float)llList2String(parts, 4);
-        gConfigured   = TRUE;
+        gGmConfigOk   = TRUE;
+        if (gTypesLoaded) gConfigured = TRUE;
 
         // Move to designated position (no 10m limit with llSetRegionPos)
         vector target = <(float)llList2String(parts, 5),
@@ -892,6 +945,8 @@ default
 
         llSetTimerEvent(10);
 
+        startTypesLoad();
+
         // Announce to controller  -  it may have rezzed us just now
         llSay(-2013, "GM_READY");
 
@@ -917,6 +972,19 @@ default
             if      (msg == "DEBUG_ON")  gDebug = TRUE;
             else if (msg == "DEBUG_OFF") gDebug = FALSE;
         }
+    }
+
+    dataserver(key query_id, string data)
+    {
+        if (query_id != gTypesQuery) return;
+        if (data == EOF)
+        {
+            onTypesLoaded();
+            return;
+        }
+        parseTypesLine(data);
+        gTypesLine++;
+        gTypesQuery = llGetNotecardLine("tower_types.cfg", gTypesLine);
     }
 
     link_message(integer sender_num, integer num, string str, key id)

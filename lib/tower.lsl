@@ -65,13 +65,6 @@ integer GM_DISCOVERY_CHANNEL  = -2007;
 integer ENEMY_CHANNEL         = -2010;
 
 
-// -----------------------------------------------------------------------------
-// TOWER TYPE → NOTECARD NAME MAP
-// Index corresponds to type_id - 1 (type_id is 1-based).
-// Add an entry here whenever a new tower type is added to the GM's type registry.
-// -----------------------------------------------------------------------------
-list NOTECARD_NAMES = ["tower_basic.cfg", "tower_sniper.cfg"];
-
 integer REG_TYPE_TOWER   = 1;
 integer RETRY_INTERVAL   = 5;
 integer LOAD_RETRY_DELAY = 2;   // seconds between notecard line requests on error
@@ -106,6 +99,7 @@ string  gNotecardName  = "";
 key     gNotecardQuery = NULL_KEY;
 integer gCurrentLine   = 0;
 integer gConfigLoaded  = FALSE;
+integer gLoadPhase     = 0;       // 0=tower_types.cfg, 1=stats notecard
 
 
 // =============================================================================
@@ -122,39 +116,19 @@ dbg(string msg)
 // NOTECARD LOADING
 // =============================================================================
 
-// Maps a type_id to a notecard name. Returns "" if type_id is out of range.
-string notecardForType(integer type_id)
-{
-    integer idx = type_id - 1;   // convert to 0-based
-    if (idx < 0 || idx >= llGetListLength(NOTECARD_NAMES))
-        return "";
-    return llList2String(NOTECARD_NAMES, idx);
-}
-
 startNotecardLoad()
 {
-    gNotecardName = notecardForType(gTowerTypeId);
-
-    if (gNotecardName == "")
+    if (llGetInventoryType("tower_types.cfg") == INVENTORY_NONE)
     {
-        llOwnerSay("[TW] No notecard defined for type " + (string)gTowerTypeId
-            + ". Using defaults.");
+        llOwnerSay("[TW] tower_types.cfg not found. Using defaults.");
         gConfigLoaded = TRUE;
         afterConfigLoaded();
         return;
     }
-
-    if (llGetInventoryType(gNotecardName) == INVENTORY_NONE)
-    {
-        llOwnerSay("[TW] Notecard '" + gNotecardName + "' not found. Using defaults.");
-        gConfigLoaded = TRUE;
-        afterConfigLoaded();
-        return;
-    }
-
-    dbg("[TW] Loading config from '" + gNotecardName + "'...");
+    gLoadPhase     = 0;
+    gNotecardName  = "";
     gCurrentLine   = 0;
-    gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
+    gNotecardQuery = llGetNotecardLine("tower_types.cfg", gCurrentLine);
 }
 
 // Parses a single notecard line and updates the appropriate global.
@@ -391,16 +365,60 @@ default
     {
         if (query_id != gNotecardQuery) return;
 
-        if (data == EOF)
+        if (gLoadPhase == 0)
         {
-            gConfigLoaded = TRUE;
-            afterConfigLoaded();
-            return;
+            // Phase 0: reading tower_types.cfg to find our notecard name
+            if (data == EOF)
+            {
+                if (gNotecardName == "")
+                {
+                    llOwnerSay("[TW] Type " + (string)gTowerTypeId
+                        + " not found in tower_types.cfg. Using defaults.");
+                    gConfigLoaded = TRUE;
+                    afterConfigLoaded();
+                    return;
+                }
+                if (llGetInventoryType(gNotecardName) == INVENTORY_NONE)
+                {
+                    llOwnerSay("[TW] '" + gNotecardName
+                        + "' not found. Using defaults.");
+                    gConfigLoaded = TRUE;
+                    afterConfigLoaded();
+                    return;
+                }
+                dbg("[TW] Loading config from '" + gNotecardName + "'...");
+                gLoadPhase   = 1;
+                gCurrentLine = 0;
+                gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
+                return;
+            }
+            // Parse tower_types.cfg line: type_id|obj_name|label|notecard
+            if (data != "" && llGetSubString(data, 0, 0) != "#")
+            {
+                list fields = llParseString2List(data, ["|"], []);
+                if (llGetListLength(fields) >= 4
+                    && (integer)llList2String(fields, 0) == gTowerTypeId)
+                {
+                    gNotecardName = llList2String(fields, 3);
+                    dbg("[TW] Found notecard: " + gNotecardName);
+                }
+            }
+            gCurrentLine++;
+            gNotecardQuery = llGetNotecardLine("tower_types.cfg", gCurrentLine);
         }
-
-        parseConfigLine(data);
-        gCurrentLine++;
-        gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
+        else
+        {
+            // Phase 1: reading stats notecard
+            if (data == EOF)
+            {
+                gConfigLoaded = TRUE;
+                afterConfigLoaded();
+                return;
+            }
+            parseConfigLine(data);
+            gCurrentLine++;
+            gNotecardQuery = llGetNotecardLine(gNotecardName, gCurrentLine);
+        }
     }
 
     listen(integer channel, string name, key id, string msg)
@@ -464,6 +482,8 @@ default
         gConfigLoaded  = FALSE;
         gNotecardQuery = NULL_KEY;
         gCurrentLine   = 0;
+        gLoadPhase     = 0;
+        gNotecardName  = "";
         gTowerPos      = llGetPos();
 
         dbg("[TW] Tower type=" + (string)gTowerTypeId

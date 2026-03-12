@@ -67,8 +67,8 @@ key     gGM_KEY      = NULL_KEY;
 integer gRegistered  = FALSE;
 integer gDiscovering = FALSE;
 
-// Tower labels  -  index+1 = type_id. Must match towerLabel() in game_manager.lsl.
-list TOWER_LABELS = ["Basic", "Sniper"];
+// Tower labels — received from GM via TOWER_LABELS message. Index+1 = type_id.
+list gTowerLabels = [];
 
 
 // =============================================================================
@@ -232,18 +232,23 @@ cullStaleDialogs()
 
 integer labelToTypeId(string label)
 {
-    integer idx = llListFindList(TOWER_LABELS, [label]);
+    integer idx = llListFindList(gTowerLabels, [label]);
     if (idx == -1) return -1;
     return idx + 1;
 }
 
 showTowerDialog(key avatar, integer gx, integer gy)
 {
+    if (gTowerLabels == [])
+    {
+        llRegionSayTo(avatar, 0, "Tower types not loaded yet.");
+        return;
+    }
     string prompt = "Select tower for grid ("
         + (string)gx + "," + (string)gy + ").\n"
         + "Expires in " + (string)DIALOG_TIMEOUT + "s.";
     integer handle = llListen(gDialogChannel, "", avatar, "");
-    llDialog(avatar, prompt, TOWER_LABELS, gDialogChannel);
+    llDialog(avatar, prompt, gTowerLabels, gDialogChannel);
     addPendingDialog(avatar, gx, gy, handle);
     dbg("[PH] Dialog -> " + llKey2Name(avatar)
         + " (" + (string)gx + "," + (string)gy + ")");
@@ -356,7 +361,13 @@ default
         }
         else if (channel == PLACEMENT_RESPONSE_CHANNEL && id == gGM_KEY)
         {
-            handlePlacementResponse(msg);
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llList2String(parts, 0) == "TOWER_LABELS")
+            {
+                gTowerLabels = llDeleteSubList(parts, 0, 0);
+                dbg("[PH] Received tower labels: " + llList2CSV(gTowerLabels));
+            }
+            else handlePlacementResponse(msg);
         }
         else if (channel == GRID_INFO_CHANNEL && id == gGM_KEY)
         {
