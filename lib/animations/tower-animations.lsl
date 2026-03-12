@@ -49,6 +49,27 @@ float   RISE_INTERVAL = 0.05;  // 10 steps × 0.05 s = 0.5 s total
 // HELPERS
 // =============================================================================
 
+// Returns the smallest factor we can safely pass to llScaleByFactor without
+// any prim in the linkset going below SL's 0.01 m minimum size.
+// Uses INITIAL_FACTOR as the target; clamps up if needed.
+float computeSafeInitialFactor()
+{
+    float safeFactor = INITIAL_FACTOR;
+    integer count = llGetNumberOfPrims();
+    integer i;
+    for (i = 1; i <= count; i++)
+    {
+        vector sz = llList2Vector(llGetLinkPrimitiveParams(i, [PRIM_SIZE]), 0);
+        float smallest = sz.x;
+        if (sz.y < smallest) smallest = sz.y;
+        if (sz.z < smallest) smallest = sz.z;
+        // factor must keep smallest >= 0.011 (small margin above 0.01 m limit)
+        float minFactor = 0.011 / smallest;
+        if (minFactor > safeFactor) safeFactor = minFactor;
+    }
+    return safeFactor;
+}
+
 // Rotate the prim (yaw only) to face a world-space target position.
 faceTarget(vector target_pos)
 {
@@ -95,9 +116,9 @@ default
             return;
         }
         // Rezzed by GM — hide and shrink until registered and in position
-        gCurrentFactor = INITIAL_FACTOR;
+        gCurrentFactor = computeSafeInitialFactor();
         llSetLinkAlpha(LINK_SET, 0.0, ALL_SIDES);
-        llScaleByFactor(INITIAL_FACTOR);
+        llScaleByFactor(gCurrentFactor);
     }
 
     link_message(integer sender_num, integer num, string str, key id)
@@ -147,7 +168,8 @@ default
                 targetFactor = INITIAL_FACTOR
                     + (1.0 - INITIAL_FACTOR) * ((float)gRiseStep / (float)RISE_STEPS);
             }
-            llScaleByFactor(targetFactor / gCurrentFactor);
+            float stepFactor = targetFactor / gCurrentFactor;
+            llScaleByFactor(stepFactor);
             gCurrentFactor = targetFactor;
 
             if (!gRising)
