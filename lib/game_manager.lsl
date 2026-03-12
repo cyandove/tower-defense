@@ -860,66 +860,6 @@ handleControllerMessage(key sender, string msg)
 
 
 // =============================================================================
-// LINK MESSAGE  -  debug script on num=42, responds on num=43
-// =============================================================================
-
-handleLinkDebug(string cmd)
-{
-    if (cmd == "dump registry")
-        llMessageLinked(LINK_THIS, 43, dumpRegistryStr(), "");
-    else if (cmd == "dump pairings")
-        llMessageLinked(LINK_THIS, 43, dumpPairingsStr(), "");
-    else if (cmd == "stats")
-        llMessageLinked(LINK_THIS, 43,
-            "Objs:" + (string)registryCount()
-            + " Enemies:" + (string)enemyCount()
-            + " Pairs:" + (string)(llGetListLength(gSpawnerPairings) / 2)
-            + " HB:" + (string)gHeartbeatSeq
-            + " Configured:" + (string)gConfigured
-            + " Mem:" + (string)llGetFreeMemory() + "b", "");
-}
-
-string dumpRegistryStr()
-{
-    integer count = registryCount();
-    string out = "[REG] --- " + (string)count + " objects ---\n";
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx      = i * 5;
-        integer obj_type = llList2Integer(gRegistry, idx + 1);
-        integer age      = llGetUnixTime() - llList2Integer(gRegistry, idx + 4);
-        string lbl;
-        if      (obj_type == 1) lbl = "TWR";
-        else if (obj_type == 2) lbl = "ENM";
-        else if (obj_type == 3) lbl = "SPN";
-        else if (obj_type == 4) lbl = "PLH";
-        else                    lbl = "UNK";
-        out += lbl
-            + " (" + (string)llList2Integer(gRegistry, idx + 2)
-            + "," + (string)llList2Integer(gRegistry, idx + 3) + ")"
-            + " " + (string)age + "s "
-            + llList2String(gRegistry, idx) + "\n";
-    }
-    return out;
-}
-
-string dumpPairingsStr()
-{
-    integer count = llGetListLength(gSpawnerPairings) / 2;
-    string out = "[PAIR] --- " + (string)count + " pairs ---\n";
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * 2;
-        out += llList2String(gSpawnerPairings, idx)
-            + " -> " + llList2String(gSpawnerPairings, idx + 1) + "\n";
-    }
-    return out;
-}
-
-
-// =============================================================================
 // MAIN STATE
 // =============================================================================
 
@@ -985,11 +925,6 @@ default
         parseTypesLine(data);
         gTypesLine++;
         gTypesQuery = llGetNotecardLine("tower_types.cfg", gTypesLine);
-    }
-
-    link_message(integer sender_num, integer num, string str, key id)
-    {
-        if (num == 42) handleLinkDebug(str);
     }
 
     timer()

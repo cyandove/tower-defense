@@ -34,7 +34,6 @@ integer HEARTBEAT_CHANNEL          = -2003;
 integer PLACEMENT_CHANNEL          = -2004;
 integer GM_DISCOVERY_CHANNEL       = -2007;
 integer PLACEMENT_RESPONSE_CHANNEL = -2008;
-integer GRID_INFO_CHANNEL          = -2011;
 integer TOWER_PLACE_CHANNEL        = -2012;
 integer CONTROLLER_CHANNEL         = -2013;
 
@@ -144,26 +143,6 @@ handleHeartbeat(string msg)
     if (llList2String(parts, 0) == "PING")
         llRegionSayTo(gGM_KEY, HEARTBEAT_CHANNEL,
             "ACK|" + llList2String(parts, 1));
-}
-
-
-// =============================================================================
-// GRID INFO RESPONSE  (proxies grid geometry to spawner via GM)
-// =============================================================================
-
-handleGridInfoRequest(key sender, string msg)
-{
-    if (sender != gGM_KEY) return;
-    list parts = llParseString2List(msg, ["|"], []);
-    if (llGetListLength(parts) < 2) return;
-    key spawner_key = (key)llList2String(parts, 1);
-    llRegionSayTo(spawner_key, GRID_INFO_CHANNEL,
-        "GRID_INFO"
-        + "|" + (string)gGridOrigin.x
-        + "|" + (string)gGridOrigin.y
-        + "|" + (string)gGridOrigin.z
-        + "|" + (string)gCellSize);
-    dbg("[PH] Sent grid info to " + (string)spawner_key);
 }
 
 
@@ -332,7 +311,6 @@ default
         llListen(GM_REGISTER_CHANNEL,        "", NULL_KEY,     "");
         llListen(HEARTBEAT_CHANNEL,          "", NULL_KEY,     "");
         llListen(PLACEMENT_RESPONSE_CHANNEL, "", NULL_KEY,     "");
-        llListen(GRID_INFO_CHANNEL,          "", NULL_KEY,     "");
         llListen(CONTROLLER_CHANNEL,         "", NULL_KEY,     "");
         llListen(DBG_CHANNEL,              "", llGetOwner(), "");
 
@@ -368,12 +346,6 @@ default
                 dbg("[PH] Received tower labels: " + llList2CSV(gTowerLabels));
             }
             else handlePlacementResponse(msg);
-        }
-        else if (channel == GRID_INFO_CHANNEL && id == gGM_KEY)
-        {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llList2String(parts, 0) == "GRID_INFO_REQUEST")
-                handleGridInfoRequest(id, msg);
         }
         else if (channel == gDialogChannel)
         {

@@ -233,41 +233,6 @@ handleHeartbeat(string msg)
 
 
 // =============================================================================
-// TARGETING
-// =============================================================================
-
-key pickTarget(list enemy_positions, integer strategy)
-{
-    integer count = llGetListLength(enemy_positions) / 5;
-    if (count == 0) return NULL_KEY;
-
-    key   best_key  = NULL_KEY;
-    float best_dist = gTowerRange + 1.0;
-
-    gTowerPos = llGetPos();
-
-    integer i;
-    for (i = 0; i < count; i++)
-    {
-        integer idx = i * 5;
-        vector enemy_pos = <(float)llList2String(enemy_positions, idx + 1),
-                            (float)llList2String(enemy_positions, idx + 2),
-                            (float)llList2String(enemy_positions, idx + 3)>;
-
-        float dist = llVecDist(gTowerPos, enemy_pos);
-        if (dist <= gTowerRange && dist < best_dist)
-        {
-            best_dist = dist;
-            best_key  = (key)llList2String(enemy_positions, idx);
-        }
-        // future strategies: else if (strategy == 1) { ... }
-    }
-
-    return best_key;
-}
-
-
-// =============================================================================
 // HIT RESOLUTION
 // =============================================================================
 
