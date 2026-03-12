@@ -28,7 +28,9 @@
 //   - GM notifies controller of handler/spawner registrations via REGISTERED.
 //   - Grid info (origin, cell size) for tower rezzing now comes from GM_CONFIG.
 //   - handleSpawnerReport() SPAWNER_PAIRED and HANDLER_QUERY retained unchanged.
-//   - debug dump functions updated: map dump removed, stats updated.
+//   - Tower type registry loaded from tower_types.cfg notecard at startup.
+//     towerObjName()/towerLabel() look up from gTowerTypes list.
+//     Tower labels sent to placement handler via TOWER_LABELS message on -2008.
 //
 // CHANNEL MAP (all inlined as literals):
 //   -2001  GM_REGISTER

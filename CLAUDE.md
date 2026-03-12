@@ -53,6 +53,22 @@ All channels are negative integers to avoid public chat collision.
 | -2012 | TOWER_PLACE |
 | -2013 | CONTROLLER (map queries, lifecycle, setup config) |
 
+## Prim Inventory Setup
+
+Each prim needs specific scripts and notecards in its inventory:
+
+| Prim | Scripts | Notecards |
+|------|---------|-----------|
+| **Controller** | `controller.lsl`, `controller-animations.lsl` (optional) | — |
+| **GameManager** | `game_manager.lsl` | `tower_types.cfg` |
+| **PlacementHandler** | `placement_handler.lsl` | — |
+| **Spawner** | `spawner.lsl` | `spawner.cfg` |
+| **TowerBasic** | `tower.lsl`, `tower-animations.lsl` (optional) | `tower_types.cfg`, `tower_basic.cfg` |
+| **TowerSniper** | `tower.lsl`, `tower-animations.lsl` (optional) | `tower_types.cfg`, `tower_sniper.cfg` |
+| **Enemy** | `enemy.lsl`, `enemy-animations.lsl` (optional) | — |
+
+The controller prim also holds the **GameManager**, **PlacementHandler**, **Spawner**, and all tower/enemy prim objects in its inventory — it rezzes them at setup time. Each tower prim needs all tower stats notecards listed in `tower_types.cfg` (or at minimum the one for its own type), since the tower reads `tower_types.cfg` to discover which stats notecard to load.
+
 ## Config Notecards
 
 Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments.

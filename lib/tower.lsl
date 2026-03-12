@@ -12,12 +12,18 @@
 //   - Supported keys: damage, range, accuracy, falloff, attack_interval,
 //     targeting_strategy, tower_type_name
 //
-// NOTECARD SETUP:
-//   Create a notecard in the tower prim's inventory named to match the entry
-//   in NOTECARD_NAMES below for the tower's type ID. Example:
+// INVENTORY SETUP:
+//   Each tower prim needs:
+//     - tower.lsl (this script)
+//     - tower-animations.lsl (optional)
+//     - tower_types.cfg (shared type registry)
+//     - tower_basic.cfg, tower_sniper.cfg, etc. (stats notecards)
 //
-//   Notecard name: "tower_basic.cfg"
-//   Contents:
+//   tower_types.cfg maps type_id → stats notecard name.
+//   The tower reads tower_types.cfg first, finds the line matching its
+//   type_id (from start_param), then loads that stats notecard.
+//
+//   Stats notecard example (tower_basic.cfg):
 //     # Basic Tower config
 //     tower_type_name=Basic Tower
 //     damage=25.0
@@ -28,13 +34,11 @@
 //     targeting_strategy=0
 //
 // STARTUP SEQUENCE:
-//   1. Load notecard (type ID from start_param → notecard name)
-//   2. Discover GM
-//   3. Query GM for placement handler key (HANDLER_QUERY)
-//   4. Request grid info from handler via GM (GRID_INFO_REQUEST)
-//   5. Derive grid coords from world position
-//   6. Register with GM
-//   7. Begin attack cycle
+//   1. Read tower_types.cfg to find stats notecard for our type_id
+//   2. Load stats notecard (damage, range, accuracy, etc.)
+//   3. Discover GM
+//   4. Register with GM (grid coords decoded from start_param)
+//   5. Begin attack cycle
 // =============================================================================
 
 
