@@ -77,10 +77,18 @@ default
 {
     state_entry()
     {
-        // Hide entire linkset and shrink to INITIAL_FACTOR of normal size
+        // No visual changes here — prim appears normally when built or edited.
+        // Shrink/hide only happens in on_rez when rezzed by the GM (start_param != 0).
+        gCurrentFactor = 1.0;
+    }
+
+    on_rez(integer start_param)
+    {
+        if (start_param == 0) return;
+        // Rezzed by GM — hide and shrink until registered and in position
+        gCurrentFactor = INITIAL_FACTOR;
         llSetLinkAlpha(LINK_SET, 0.0, ALL_SIDES);
         llScaleByFactor(INITIAL_FACTOR);
-        gCurrentFactor = INITIAL_FACTOR;
     }
 
     link_message(integer sender_num, integer num, string str, key id)
