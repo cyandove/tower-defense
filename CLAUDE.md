@@ -29,7 +29,7 @@ The game runs as a multi-script system. Each script lives in its own prim.
 
 **Placement Handler** (`placement_handler.lsl`) — a flat prim covering the grid. Translates player touch coordinates to grid cells, runs the `llDialog` tower selection UI, and sends `PLACEMENT_REQUEST` to the GM.
 
-**Tower** (`tower.lsl`) — reads its config from a notecard (type determined by `start_param` at rez). Requests a target from the GM each fire tick; resolves hit/miss locally using `calcHitChance()`; sends damage directly to the enemy prim.
+**Tower** (`tower.lsl`) — reads its config from a notecard (type determined by `start_param` at rez). Requests a target from the GM each fire tick; resolves hit/miss locally using `calcHitChance()`; sends damage directly to the enemy prim. The `start_param` encodes `type_id * 10000 + gx * 100 + gy` — limits: type_id 1–9, grid coords 0–99. Both the GM's `rezTower()` and the tower's `on_rez` must agree on this encoding.
 
 **Enemy** (`enemy.lsl`) — moves along waypoints received at rez. Reports position to the GM every ~0.5 s. On reaching the exit sends `ENEMY_ARRIVED`; on death sends `ENEMY_KILLED`. Both events propagate to the controller via the GM.
 
