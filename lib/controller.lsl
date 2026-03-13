@@ -103,6 +103,13 @@ integer MENU_DIALOG_TIMEOUT = 30;   // seconds before an unanswered dialog is cu
 string INV_GM      = "GameManager";
 string INV_HANDLER = "PlacementHandler";
 string INV_SPAWNER = "Spawner";
+string INV_BUILDER = "MapBuilder";
+
+
+// -----------------------------------------------------------------------------
+// MAP TILE CHANNEL
+// -----------------------------------------------------------------------------
+integer MAP_TILE = -2014;
 
 
 // -----------------------------------------------------------------------------
@@ -125,6 +132,7 @@ vector  gGridOrigin   = ZERO_VECTOR;
 key     gGM_Key       = NULL_KEY;
 key     gSpawner_Key  = NULL_KEY;
 key     gHandler_Key  = NULL_KEY;
+key     gBuilder_Key  = NULL_KEY;
 integer gLifecycle    = 0;    // STATE_* value
 integer gLives        = 0;
 integer gScore        = 0;
@@ -441,8 +449,53 @@ notifyAnimations()
 // GAME LIFECYCLE
 // =============================================================================
 
+// =============================================================================
+// MAP BUILDER SUPPORT
+// =============================================================================
+
+// Extract cell types (stride-3 index 0) from gMap into a CSV string.
+// Result: "0,1,2,1,1,..." (100 values for a 10x10 grid)
+string buildCellTypeString()
+{
+    string result = "";
+    integer total = MAP_W * MAP_H;
+    integer i;
+    for (i = 0; i < total; i++)
+    {
+        if (result != "") result += ",";
+        result += (string)llList2Integer(gMap, i * 3);
+    }
+    return result;
+}
+
+startMapBuilder()
+{
+    if (llGetInventoryType(INV_BUILDER) == INVENTORY_NONE)
+    {
+        llOwnerSay("[CTL] Missing inventory: " + INV_BUILDER);
+        return;
+    }
+    loadMap(1);
+    vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
+    llRezObject(INV_BUILDER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    dbg("[CTL] Rezzed MapBuilder.");
+}
+
+cleanupBuilder()
+{
+    if (gBuilder_Key != NULL_KEY)
+    {
+        llRegionSayTo(gBuilder_Key, CTRL, "SHUTDOWN");
+        gBuilder_Key = NULL_KEY;
+    }
+    gMap       = [];
+    gWaypoints = [];
+}
+
+
 startSetup()
 {
+    if (gBuilder_Key != NULL_KEY) cleanupBuilder();
     gGridOrigin = llGetPos();
     gLives      = STARTING_LIVES;
     gScore      = 0;
@@ -540,6 +593,7 @@ cleanupObjects()
 
 resetGame()
 {
+    if (gBuilder_Key != NULL_KEY) cleanupBuilder();
     cleanupObjects();
     gMap       = [];
     gWaypoints = [];
@@ -560,6 +614,24 @@ handleControllerMessage(key sender, string msg)
 {
     list parts  = llParseString2List(msg, ["|"], []);
     string cmd  = llList2String(parts, 0);
+
+    // MapBuilder announces itself after rezzing
+    if (cmd == "BUILDER_READY")
+    {
+        gBuilder_Key = sender;
+        dbg("[CTL] Builder online: " + (string)gBuilder_Key);
+        string types = buildCellTypeString();
+        llRegionSayTo(gBuilder_Key, CTRL,
+            "BUILDER_CONFIG"
+            + "|" + (string)gGridOrigin.x
+            + "|" + (string)gGridOrigin.y
+            + "|" + (string)gGridOrigin.z
+            + "|" + (string)CELL_SIZE
+            + "|" + (string)MAP_W
+            + "|" + (string)MAP_H
+            + "|" + types);
+        return;
+    }
 
     // GM announces itself immediately after rezzing
     if (cmd == "GM_READY")
@@ -731,8 +803,16 @@ showMenu(key avatar)
 
     if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
     {
-        prompt  = "Tower Defense\nPress 'Start Game' to begin.";
-        buttons = ["Start Game"];
+        if (gBuilder_Key != NULL_KEY)
+        {
+            prompt  = "Tower Defense\nMap builder active.";
+            buttons = ["Link Tiles", "Clean Up Map"];
+        }
+        else
+        {
+            prompt  = "Tower Defense\nPress 'Start Game' to begin.";
+            buttons = ["Start Game", "Build Map"];
+        }
     }
     else if (gLifecycle == STATE_WAITING)
     {
@@ -774,6 +854,25 @@ handleMenuResponse(key avatar, string choice)
     {
         if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
             startSetup();
+    }
+    else if (choice == "Build Map")
+    {
+        if ((gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
+            && gBuilder_Key == NULL_KEY)
+        {
+            gGridOrigin = llGetPos();
+            startMapBuilder();
+        }
+    }
+    else if (choice == "Link Tiles")
+    {
+        if (gBuilder_Key != NULL_KEY)
+            llRegionSayTo(gBuilder_Key, CTRL, "LINK_TILES");
+    }
+    else if (choice == "Clean Up Map")
+    {
+        if (gBuilder_Key != NULL_KEY)
+            cleanupBuilder();
     }
     else if (choice == "Start Wave")
     {
@@ -850,6 +949,14 @@ default
             gWaveClearTimer--;
             if (gWaveClearTimer <= 0)
                 startNextWave();
+        }
+        // Auto-clean stale builder (manually deleted or region restart)
+        if (gBuilder_Key != NULL_KEY && llKey2Name(gBuilder_Key) == "")
+        {
+            dbg("[CTL] Builder gone, auto-cleaning.");
+            gBuilder_Key = NULL_KEY;
+            gMap       = [];
+            gWaypoints = [];
         }
         cullStaleMenuDialogs();
     }

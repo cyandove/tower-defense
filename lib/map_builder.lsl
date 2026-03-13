@@ -1,0 +1,252 @@
+// =============================================================================
+// map_builder.lsl
+// Tower Defense Map Builder  -  Phase 8
+// =============================================================================
+// Lives in the controller prim's inventory as "MapBuilder" object, itself
+// containing the "MapTile" object + map_tile.lsl.
+//
+// FLOW:
+//   1. Rezzed by controller on "Build Map". Sends BUILDER_READY on CTRL.
+//   2. Receives BUILDER_CONFIG from controller: grid origin, cell_size, map W/H,
+//      and CSV string of 100 cell types.
+//   3. Rezzes 100 MapTile prims via timer (one per 0.2s tick) to avoid
+//      overflowing the 64-event LSL queue with object_rez events.
+//   4. Tracks each tile's key via object_rez. When all tiles are rezzed,
+//      broadcasts MAP_DATA on MAP_TILE so every tile can initialise itself.
+//   5. On LINK_TILES: requests PERMISSION_CHANGE_LINKS, then iterates
+//      gTileKeys calling llCreateLink (1.0s server delay per call = ~100s).
+//      Reports progress every 10 tiles. After all linked, breaks self from
+//      linkset and dies.
+//   6. On SHUTDOWN: broadcasts SHUTDOWN on MAP_TILE, then dies.
+//
+// CHANNELS:
+//   CTRL     = -2013   controller <-> builder
+//   MAP_TILE = -2014   builder <-> tiles
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// CHANNELS
+// -----------------------------------------------------------------------------
+integer CTRL     = -2013;
+integer MAP_TILE = -2014;
+
+
+// -----------------------------------------------------------------------------
+// DEBUG
+// -----------------------------------------------------------------------------
+integer gDebug      = FALSE;
+integer DBG_CHANNEL = -2099;
+
+dbg(string msg)
+{
+    if (gDebug) llOwnerSay(msg);
+}
+
+
+// -----------------------------------------------------------------------------
+// GRID CONFIG  (received from controller)
+// -----------------------------------------------------------------------------
+vector  gGridOrigin = ZERO_VECTOR;
+float   gCellSize   = 2.0;
+integer gMapW       = 10;
+integer gMapH       = 10;
+list    gCellTypes  = [];   // integers, length = gMapW * gMapH
+
+
+// -----------------------------------------------------------------------------
+// REZ STATE
+// -----------------------------------------------------------------------------
+string  INV_TILE    = "MapTile";
+integer gRezX       = 0;
+integer gRezY       = 0;
+integer gRezzing    = FALSE;
+float   REZ_INTERVAL = 0.2;   // seconds between tile rezzes
+
+list    gTileKeys   = [];   // keys of all rezzed tiles, in rez order
+integer gRezTotal   = 0;    // = gMapW * gMapH
+
+
+// -----------------------------------------------------------------------------
+// LINK STATE
+// -----------------------------------------------------------------------------
+integer gLinking    = FALSE;
+integer gLinkIdx    = 0;
+
+
+// -----------------------------------------------------------------------------
+// HELPERS
+// -----------------------------------------------------------------------------
+
+vector tileWorldPos(integer gx, integer gy)
+{
+    return <gGridOrigin.x + (gx + 0.5) * gCellSize,
+            gGridOrigin.y + (gy + 0.5) * gCellSize,
+            gGridOrigin.z + 0.1>;
+}
+
+startRezzing()
+{
+    gRezX    = 0;
+    gRezY    = 0;
+    gTileKeys = [];
+    gRezzing = TRUE;
+    llSetTimerEvent(REZ_INTERVAL);
+    llOwnerSay("[BLD] Rezzing " + (string)gRezTotal + " tiles...");
+}
+
+// Broadcast MAP_DATA to all tiles so they can initialise themselves.
+broadcastMapData()
+{
+    string types_csv = llDumpList2String(gCellTypes, ",");
+    llSay(MAP_TILE,
+        "MAP_DATA"
+        + "|" + (string)gMapW
+        + "|" + (string)gMapH
+        + "|" + (string)gCellSize
+        + "|" + types_csv);
+    llOwnerSay("[BLD] Map data broadcast. All tiles initialised.");
+}
+
+
+// =============================================================================
+// MAIN STATE
+// =============================================================================
+
+default
+{
+    state_entry()
+    {
+        llListen(CTRL,        "", NULL_KEY,     "");
+        llListen(MAP_TILE,    "", NULL_KEY,     "");
+        llListen(DBG_CHANNEL, "", llGetOwner(), "");
+        // Announce to controller
+        llSay(CTRL, "BUILDER_READY");
+        dbg("[BLD] Builder ready.");
+    }
+
+    listen(integer channel, string name, key id, string msg)
+    {
+        if (channel == DBG_CHANNEL)
+        {
+            if      (msg == "DEBUG_ON")  gDebug = TRUE;
+            else if (msg == "DEBUG_OFF") gDebug = FALSE;
+            return;
+        }
+
+        if (channel == CTRL)
+        {
+            list   parts = llParseString2List(msg, ["|"], []);
+            string cmd   = llList2String(parts, 0);
+
+            if (cmd == "BUILDER_CONFIG")
+            {
+                // BUILDER_CONFIG|ox|oy|oz|cell_size|map_w|map_h|t0,t1,...,t99
+                if (llGetListLength(parts) < 8) return;
+                gGridOrigin = <(float)llList2String(parts, 1),
+                               (float)llList2String(parts, 2),
+                               (float)llList2String(parts, 3)>;
+                gCellSize   = (float)llList2String(parts, 4);
+                gMapW       = (integer)llList2String(parts, 5);
+                gMapH       = (integer)llList2String(parts, 6);
+                string csv  = llList2String(parts, 7);
+                gCellTypes  = llParseString2List(csv, [","], []);
+                gRezTotal   = gMapW * gMapH;
+                dbg("[BLD] Config received. Grid: " + (string)gMapW
+                    + "x" + (string)gMapH
+                    + " cells. Cell size: " + (string)gCellSize);
+                startRezzing();
+                return;
+            }
+
+            if (cmd == "LINK_TILES")
+            {
+                if (llGetListLength(gTileKeys) == 0)
+                {
+                    llOwnerSay("[BLD] No tiles to link.");
+                    return;
+                }
+                gLinking = TRUE;
+                gLinkIdx = 0;
+                llOwnerSay("[BLD] Requesting link permissions...");
+                llRequestPermissions(llGetOwner(), PERMISSION_CHANGE_LINKS);
+                return;
+            }
+
+            if (cmd == "SHUTDOWN")
+            {
+                llSay(MAP_TILE, "SHUTDOWN");
+                llSleep(0.5);
+                llDie();
+                return;
+            }
+        }
+    }
+
+    timer()
+    {
+        if (gRezzing)
+        {
+            if (gRezX >= gMapW)
+            {
+                gRezX = 0;
+                gRezY++;
+            }
+            if (gRezY >= gMapH)
+            {
+                // All tiles queued — wait for object_rez events to complete
+                gRezzing = FALSE;
+                llSetTimerEvent(0.0);
+                dbg("[BLD] All " + (string)gRezTotal + " tiles queued.");
+                return;
+            }
+
+            integer cell_type = llList2Integer(gCellTypes, gRezY * gMapW + gRezX);
+            integer param = cell_type * 10000 + gRezX * 100 + gRezY;
+            vector  pos   = tileWorldPos(gRezX, gRezY);
+            llRezObject(INV_TILE, pos, ZERO_VECTOR, ZERO_ROTATION, param);
+            gRezX++;
+        }
+    }
+
+    object_rez(key id)
+    {
+        gTileKeys += [id];
+        integer count = llGetListLength(gTileKeys);
+        if (count == gRezTotal)
+        {
+            llOwnerSay("[BLD] All " + (string)gRezTotal
+                + " tiles rezzed. Broadcasting map data...");
+            broadcastMapData();
+        }
+    }
+
+    run_time_permissions(integer perm)
+    {
+        if (!(perm & PERMISSION_CHANGE_LINKS)) return;
+
+        integer total = llGetListLength(gTileKeys);
+        llOwnerSay("[BLD] Linking " + (string)total
+            + " tiles (~" + (string)total + "s)...");
+
+        integer i;
+        for (i = 0; i < total; i++)
+        {
+            key tile = llList2Key(gTileKeys, i);
+            llCreateLink(tile, TRUE);
+            if ((i + 1) % 10 == 0)
+                llOwnerSay("[BLD] Linked " + (string)(i + 1)
+                    + "/" + (string)total + " tiles.");
+        }
+
+        // Detach the builder itself from the linkset (link 1 = root = self after linking)
+        llBreakLink(1);
+        llOwnerSay("[BLD] Board linked! Take it into inventory.");
+        llDie();
+    }
+
+    on_rez(integer start_param)
+    {
+        llResetScript();
+    }
+}
