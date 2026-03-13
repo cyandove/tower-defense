@@ -194,11 +194,67 @@ state active
                 return;
             }
 
+            if (cmd == "EXPORT_MAP")
+            {
+                // Find entry_x: first path (type 2) cell on y=0
+                integer entry_x = -1;
+                integer x;
+                for (x = 0; x < gMapW; x++)
+                {
+                    if (llList2Integer(gCellTypes, x) == 2)
+                    { entry_x = x; x = gMapW; }
+                }
+                if (entry_x == -1)
+                    llOwnerSay("[BLD] WARNING: no path cell on y=0");
+                llOwnerSay("[BLD] --- COPY FROM NEXT LINE ---");
+                llOwnerSay("integer loadMap_N()");
+                llOwnerSay("{");
+                llOwnerSay("    gMap = [];");
+                integer y;
+                for (y = 0; y < gMapH; y++)
+                {
+                    string row = "    gMap += [";
+                    for (x = 0; x < gMapW; x++)
+                    {
+                        integer t = llList2Integer(gCellTypes, y * gMapW + x);
+                        row += (string)t + ",0,0";
+                        if (x < gMapW - 1) row += ", ";
+                    }
+                    row += "]; // y" + (string)y;
+                    llOwnerSay(row);
+                }
+                llOwnerSay("    return " + (string)entry_x
+                    + ";   // entry cell x on y=0");
+                llOwnerSay("}");
+                llOwnerSay("[BLD] --- END ---");
+                return;
+            }
+
             if (cmd == "SHUTDOWN")
             {
                 llSay(MAP_TILE, "SHUTDOWN");
                 llSleep(0.5);
                 llDie();
+                return;
+            }
+        }
+
+        if (channel == MAP_TILE)
+        {
+            list   parts = llParseString2List(msg, ["|"], []);
+            string cmd   = llList2String(parts, 0);
+
+            if (cmd == "TYPE_CHANGE")
+            {
+                // TYPE_CHANGE|gx|gy|new_type
+                if (llGetListLength(parts) < 4) return;
+                integer tx  = (integer)llList2String(parts, 1);
+                integer ty  = (integer)llList2String(parts, 2);
+                integer nt  = (integer)llList2String(parts, 3);
+                integer idx = ty * gMapW + tx;
+                gCellTypes  = llListReplaceList(gCellTypes, [nt], idx, idx);
+                dbg("[BLD] TYPE_CHANGE (" + (string)tx + "," + (string)ty
+                    + ")=" + (string)nt);
                 return;
             }
         }

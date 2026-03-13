@@ -153,7 +153,7 @@ string centerBtn()
 list buildMenuButtons()
 {
     return [
-        "Set Tex", "Clear", "Done",
+        "Set Tex", "Type", "Done",
         neighborBtn("SW", -1, -1), neighborBtn("S", 0, -1), neighborBtn("SE", 1, -1),
         neighborBtn("W", -1,  0),  centerBtn(),              neighborBtn("E", 1, 0),
         neighborBtn("NW",-1,  1),  neighborBtn("N", 0, 1),  neighborBtn("NE",1, 1)
@@ -327,10 +327,31 @@ default
                 return;
             }
 
-            if (msg == "Clear")
+            if (msg == "Type")
             {
-                llSetTexture(TEXTURE_BLANK, ALL_SIDES);
+                // Secondary dialog — re-register one-shot listener
+                gMenuHandle = llListen(gMenuChannel, "", gMenuAvatar, "");
+                llDialog(gMenuAvatar,
+                    "Set type for (" + (string)gGridX + "," + (string)gGridY + "):",
+                    ["Blocked", "Path", "Build"], gMenuChannel);
+                return;
+            }
+
+            if (msg == "Build" || msg == "Path" || msg == "Blocked")
+            {
+                integer newType;
+                if      (msg == "Build")   newType = 1;
+                else if (msg == "Path")    newType = 2;
+                else                       newType = 0;
+                gCellType = newType;
                 applyColor(gCellType);
+                // Update local map copy so neighbour labels stay current
+                integer selfIdx = gGridY * gMapW + gGridX;
+                gCellTypes = llListReplaceList(gCellTypes, [newType], selfIdx, selfIdx);
+                llSay(MAP_TILE, "TYPE_CHANGE"
+                    + "|" + (string)gGridX
+                    + "|" + (string)gGridY
+                    + "|" + (string)newType);
                 showTileMenu(gMenuAvatar);
                 return;
             }

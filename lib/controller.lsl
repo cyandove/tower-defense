@@ -806,7 +806,7 @@ showMenu(key avatar)
         if (gBuilder_Key != NULL_KEY)
         {
             prompt  = "Tower Defense\nMap builder active.";
-            buttons = ["Link Tiles", "Clean Up Map"];
+            buttons = ["Link Tiles", "Export Map", "Clean Up Map"];
         }
         else
         {
@@ -868,6 +868,11 @@ handleMenuResponse(key avatar, string choice)
     {
         if (gBuilder_Key != NULL_KEY)
             llRegionSayTo(gBuilder_Key, CTRL, "LINK_TILES");
+    }
+    else if (choice == "Export Map")
+    {
+        if (gBuilder_Key != NULL_KEY)
+            llRegionSayTo(gBuilder_Key, CTRL, "EXPORT_MAP");
     }
     else if (choice == "Clean Up Map")
     {
