@@ -11,7 +11,9 @@
 // FLOW:
 //   1. on_rez decodes start_param, stores gGridX/gGridY/gCellType.
 //   2. Waits in default state for MAP_DATA broadcast on MAP_TILE channel.
-//   3. On MAP_DATA: stores full map, sets scale from cell_size, colours self.
+//   3. On MAP_DATA: stores full map, sets scale, moves self via llSetRegionPos
+//      to correct grid position (tiles rez at builder's origin to avoid the
+//      llRezObject 10m limit), then colours self by cell type.
 //   4. On touch: shows 12-button compass-rose dialog.
 //   5. Dialog responses: neighbour buttons → OPEN_MENU broadcast; Set Tex →
 //      llTextBox; Clear → revert color; Done → close; center → reopen menu.
@@ -55,6 +57,7 @@ integer gCellType  = 0;   // 0=blocked, 1=buildable, 2=path
 integer gMapW       = 10;
 integer gMapH       = 10;
 float   gCellSize   = 2.0;
+vector  gGridOrigin = ZERO_VECTOR;
 list    gCellTypes  = [];   // integer per cell, length = gMapW * gMapH
 integer gMapReady   = FALSE;
 
@@ -262,17 +265,25 @@ state active
 
             if (cmd == "MAP_DATA" && !gMapReady)
             {
-                // MAP_DATA|map_w|map_h|cell_size|t0,t1,...
-                if (llGetListLength(parts) < 5) return;
-                gMapW      = (integer)llList2String(parts, 1);
-                gMapH      = (integer)llList2String(parts, 2);
-                gCellSize  = (float)  llList2String(parts, 3);
-                string csv = llList2String(parts, 4);
-                gCellTypes = llParseString2List(csv, [","], []);
-                gMapReady  = TRUE;
-                // Update scale with confirmed cell size
+                // MAP_DATA|map_w|map_h|cell_size|ox|oy|oz|t0,t1,...
+                if (llGetListLength(parts) < 8) return;
+                gMapW       = (integer)llList2String(parts, 1);
+                gMapH       = (integer)llList2String(parts, 2);
+                gCellSize   = (float)  llList2String(parts, 3);
+                gGridOrigin = <(float)llList2String(parts, 4),
+                               (float)llList2String(parts, 5),
+                               (float)llList2String(parts, 6)>;
+                string csv  = llList2String(parts, 7);
+                gCellTypes  = llParseString2List(csv, [","], []);
+                gMapReady   = TRUE;
                 llSetScale(<gCellSize, gCellSize, 0.05>);
-                dbg("[TILE] Map data received. Ready.");
+                // Move to correct grid position (no distance limit via llSetRegionPos)
+                vector worldPos = <gGridOrigin.x + (gGridX + 0.5) * gCellSize,
+                                   gGridOrigin.y + (gGridY + 0.5) * gCellSize,
+                                   gGridOrigin.z + 0.1>;
+                llSetRegionPos(worldPos);
+                dbg("[TILE] Map data received. Moving to ("
+                    + (string)gGridX + "," + (string)gGridY + ").");
                 return;
             }
 

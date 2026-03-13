@@ -37,11 +37,14 @@ plan.md        — phased development log
 
 The controller prim's inventory must contain these objects (names must match exactly):
 
-| Inventory item | Script inside |
+| Inventory item | Scripts / objects inside |
 |---|---|
 | `GameManager` | `game_manager.lsl` |
 | `PlacementHandler` | `placement_handler.lsl` |
 | `Spawner` | `spawner.lsl` |
+| `MapBuilder` _(optional)_ | `map_builder.lsl`, `MapTile` object |
+
+The `MapBuilder` object is only required if you intend to use the [Map Builder](#map-builder) tool. See that section for how to prepare the `MapBuilder` and `MapTile` objects.
 
 ### Step 2 — Prepare the GameManager prim
 
@@ -209,7 +212,51 @@ Cell types:
 
 The entry cell is the path cell on `y=0` (the first row). `loadMap()` calls `deriveWaypoints()` automatically — no manual waypoint authoring needed.
 
-To add a new map: write a `loadMap_2()` function and add a branch in `loadMap()`.
+To add a new map: write a `loadMap_2()` function and add a branch in `loadMap()`. To design a map interactively in-world, use the [Map Builder](#map-builder).
+
+---
+
+## Map Builder
+
+The Map Builder is an interactive in-world tool for designing and texturing game board maps. It rezzes a grid of 100 clickable tiles color-coded by cell type, and can produce a finished 100-prim linkset ready for use as a game board.
+
+### Usage
+
+1. Touch the controller in IDLE state — the menu shows **Start Game** and **Build Map**.
+2. Select **Build Map** — the controller rezzes the `MapBuilder`, which rezzes 100 `MapTile` prims over ~20 seconds (one per 0.2s tick).
+3. Tiles appear color-coded by cell type:
+
+| Color | Cell type |
+|---|---|
+| Green `<0.2, 0.7, 0.2>` | Buildable |
+| Brown `<0.6, 0.4, 0.2>` | Path |
+| Dark gray `<0.25, 0.25, 0.25>` | Blocked |
+
+### Tile interaction
+
+Click any tile to open a 12-button compass-rose dialog:
+
+- The **center button** shows the tile's coordinates and type initial (e.g. `(3,4)B`)
+- The **8 directional buttons** show each neighbor's type label — clicking one opens that neighbor's dialog
+- **Set Tex** — prompts for a texture UUID; the texture is applied to that tile
+- **Clear** — removes the applied texture and restores the type color
+- **Done** — closes the dialog
+
+Off-grid neighbor buttons show `---`.
+
+### Finishing the board
+
+After texturing, touch the controller and select **Link Tiles**. The builder links all 100 tiles into a single linkset — this takes ~100 seconds (one `llCreateLink` call per tile with a mandatory 1s delay each). Progress is reported every 10 tiles. When complete the builder announces `Board linked!` and removes itself. Take the 100-prim linkset into inventory.
+
+To discard without linking, select **Clean Up Map** — all tiles and the builder are removed immediately.
+
+### In-world setup (one-time)
+
+The `MapBuilder` and `MapTile` objects must be created once and stored in the appropriate inventories:
+
+1. Create a flat box prim (z-scale `0.05`), name it **`MapTile`**, add `map_tile.lsl` inside, then take it into inventory.
+2. Create a prim, name it **`MapBuilder`**, add `map_builder.lsl` and the `MapTile` object inside, then take it into inventory.
+3. Place the `MapBuilder` object in the **controller prim's inventory** alongside `GameManager`, `PlacementHandler`, and `Spawner`.
 
 ---
 
@@ -270,6 +317,7 @@ All inter-script communication uses negative channels to avoid public chat.
 | `-2011` | `GRID_INFO` |
 | `-2012` | `TOWER_PLACE` |
 | `-2013` | `CONTROLLER` (map queries, lifecycle, setup config) |
+| `-2014` | `MAP_TILE` (map builder ↔ tiles, tile ↔ tile navigation) |
 | `-2099` | `DEBUG` (owner-only broadcast toggle) |
 
 ---

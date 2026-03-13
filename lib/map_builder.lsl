@@ -10,9 +10,11 @@
 //   2. Receives BUILDER_CONFIG from controller: grid origin, cell_size, map W/H,
 //      and CSV string of 100 cell types.
 //   3. Rezzes 100 MapTile prims via timer (one per 0.2s tick) to avoid
-//      overflowing the 64-event LSL queue with object_rez events.
+//      overflowing the 64-event LSL queue with object_rez events. All tiles
+//      are rezzed at the builder's own position (llRezObject 10m limit workaround).
 //   4. Tracks each tile's key via object_rez. When all tiles are rezzed,
-//      broadcasts MAP_DATA on MAP_TILE so every tile can initialise itself.
+//      broadcasts MAP_DATA (including grid origin) on MAP_TILE. Each tile
+//      calls llSetRegionPos to move itself to its correct grid position.
 //   5. On LINK_TILES: requests PERMISSION_CHANGE_LINKS, then iterates
 //      gTileKeys calling llCreateLink (1.0s server delay per call = ~100s).
 //      Reports progress every 10 tiles. After all linked, breaks self from
@@ -78,11 +80,12 @@ integer gLinkIdx    = 0;
 // HELPERS
 // -----------------------------------------------------------------------------
 
-vector tileWorldPos(integer gx, integer gy)
+// All tiles rez at the builder's own position to stay within llRezObject's 10m limit.
+// Each tile calls llSetRegionPos on itself after receiving MAP_DATA (which includes
+// the grid origin) to move to its correct world position.
+vector tileRezPos()
 {
-    return <gGridOrigin.x + (gx + 0.5) * gCellSize,
-            gGridOrigin.y + (gy + 0.5) * gCellSize,
-            gGridOrigin.z + 0.1>;
+    return llGetPos() + <0.0, 0.0, 0.5>;
 }
 
 startRezzing()
@@ -95,7 +98,8 @@ startRezzing()
     llOwnerSay("[BLD] Rezzing " + (string)gRezTotal + " tiles...");
 }
 
-// Broadcast MAP_DATA to all tiles so they can initialise themselves.
+// Broadcast MAP_DATA to all tiles so they can initialise and position themselves.
+// Format: MAP_DATA|map_w|map_h|cell_size|ox|oy|oz|t0,t1,...
 broadcastMapData()
 {
     string types_csv = llDumpList2String(gCellTypes, ",");
@@ -104,6 +108,9 @@ broadcastMapData()
         + "|" + (string)gMapW
         + "|" + (string)gMapH
         + "|" + (string)gCellSize
+        + "|" + (string)gGridOrigin.x
+        + "|" + (string)gGridOrigin.y
+        + "|" + (string)gGridOrigin.z
         + "|" + types_csv);
     llOwnerSay("[BLD] Map data broadcast. All tiles initialised.");
 }
@@ -203,8 +210,7 @@ default
 
             integer cell_type = llList2Integer(gCellTypes, gRezY * gMapW + gRezX);
             integer param = cell_type * 10000 + gRezX * 100 + gRezY;
-            vector  pos   = tileWorldPos(gRezX, gRezY);
-            llRezObject(INV_TILE, pos, ZERO_VECTOR, ZERO_ROTATION, param);
+            llRezObject(INV_TILE, tileRezPos(), ZERO_VECTOR, ZERO_ROTATION, param);
             gRezX++;
         }
     }
