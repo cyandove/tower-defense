@@ -1,0 +1,221 @@
+# Plan: board_mover.lsl — Auto-Position Linked Map Board
+
+## Context
+
+After map tiles are linked into a 100-prim board and taken into the controller's inventory, the controller has no way to rez and position it automatically. The board has no scripts (map_tile.lsl is inert when `start_param=0`) so it can't receive a position message and move itself. The board also commonly sits more than 10m from the controller's rez point, so the controller can't rez it directly at the target location.
+
+Solution: a small dedicated `board_mover.lsl` script lives in the board's **root prim**. On rez it receives `BOARD_CONFIG` from the controller, calls `llSetRegionPos` to move the whole linkset, then removes itself (`llRemoveInventory`). Separately, `map_tile.lsl` gains a minimal SHUTDOWN listener when rezzed with `start_param=0` (board mode), so the controller can clean up the board without a persistent script.
+
+---
+
+## Root Prim Identity
+
+- Tiles are rezzed in order: (0,0), (1,0), ..., (9,9). `gTileKeys[0]` = tile (0,0).
+- `llCreateLink(tile, TRUE)` keeps the builder as link 1 (root); tiles accumulate as children 2–101.
+- After `llBreakLink(1)`, tile (0,0) / `gTileKeys[0]` becomes the new link 1 (root).
+- The root tile's correct world position = `<gGridOrigin.x + cs*0.5, gGridOrigin.y + cs*0.5, gGridOrigin.z + 0.1>`.
+- `llSetRegionPos` called from any prim in a linkset moves the **root**, so calling it from the root prim directly places the whole board.
+
+---
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `lib/board_mover.lsl` | **New script** — positions board on rez, then removes itself |
+| `lib/map_builder.lsl` | Deliver `board_mover` to `gTileKeys[0]` via `llGiveInventory` before `llBreakLink` |
+| `lib/map_tile.lsl` | When `start_param == 0`: register minimal SHUTDOWN listener on MAP_TILE |
+| `lib/controller.lsl` | Rez MapBoard; handle `BOARD_READY`; send `BOARD_CONFIG`; clean up board on shutdown |
+
+---
+
+## board_mover.lsl (new file)
+
+```lsl
+// board_mover.lsl
+// Lives in the root prim (tile 0,0) of the linked MapBoard.
+// On rez: waits for BOARD_CONFIG, positions the board, then removes itself.
+// Cleanup (llDie) is handled by map_tile.lsl's SHUTDOWN listener.
+integer CTRL = -2013;
+integer gHandle = 0;
+
+default
+{
+    state_entry() {}   // nothing on first compile
+
+    on_rez(integer start_param)
+    {
+        // Only activate when rezzed as part of a multi-prim linkset.
+        // Standalone rez (e.g., dragged from inventory manually) stays inert.
+        if (llGetNumberOfPrims() <= 1) return;
+        gHandle = llListen(CTRL, "", NULL_KEY, "");
+        llSay(CTRL, "BOARD_READY");
+    }
+
+    listen(integer channel, string name, key id, string msg)
+    {
+        list   parts = llParseString2List(msg, ["|"], []);
+        string cmd   = llList2String(parts, 0);
+
+        if (cmd == "BOARD_CONFIG")
+        {
+            // BOARD_CONFIG|ox|oy|oz|cell_size
+            if (llGetListLength(parts) < 5) return;
+            float ox = (float)llList2String(parts, 1);
+            float oy = (float)llList2String(parts, 2);
+            float oz = (float)llList2String(parts, 3);
+            float cs = (float)llList2String(parts, 4);
+            // Root is tile (0,0) — move it to its correct grid position.
+            // All other tiles follow since they maintain fixed offsets from root.
+            vector target = <ox + cs * 0.5, oy + cs * 0.5, oz + 0.1>;
+            llSetRegionPos(target);
+            if (gHandle != 0) { llListenRemove(gHandle); gHandle = 0; }
+            llRemoveInventory(llGetScriptName());   // board positioned — clean up
+        }
+    }
+}
+```
+
+---
+
+## map_tile.lsl — add SHUTDOWN listener for board rez
+
+Current `on_rez` guard (line 222):
+```lsl
+if (start_param == 0) return;  // rezzed from inventory — stay inert
+```
+
+Change to:
+```lsl
+if (start_param == 0)
+{
+    // Rezzed as part of the linked MapBoard — stay visually inert
+    // but listen for SHUTDOWN so the controller can clean up the board.
+    llListen(MAP_TILE, "", NULL_KEY, "SHUTDOWN");
+    return;
+}
+```
+
+The existing `if (cmd == "SHUTDOWN") { llDie(); return; }` handler in the MAP_TILE listen block already handles this; calling `llDie()` from the root prim kills the entire linkset.
+
+The controller sends `llRegionSayTo(gBoard_Key, MAP_TILE, "SHUTDOWN")` — targeted to root prim only, which calls `llDie()` on behalf of the whole board.
+
+---
+
+## map_builder.lsl — deliver board_mover to root tile
+
+In `run_time_permissions`, after the linking loop and before `llBreakLink(1)`:
+
+```lsl
+// Give board_mover to tile (0,0) — it will become root after llBreakLink(1).
+// Requires "board_mover" script to be in the builder prim's inventory.
+if (llGetInventoryType("board_mover") != INVENTORY_NONE)
+    llGiveInventory(llList2Key(gTileKeys, 0), "board_mover");
+
+llBreakLink(1);
+llOwnerSay("[BLD] Board linked! Add to controller inventory.");
+llDie();
+```
+
+**Inventory requirement:** The user must place `board_mover.lsl` (compiled) in the **MapBuilder** prim before building. The builder delivers it automatically to the right tile.
+
+---
+
+## controller.lsl
+
+### New globals and inventory name
+
+```lsl
+string INV_MAP_BOARD = "MapBoard";
+key    gBoard_Key    = NULL_KEY;
+```
+
+### rezAllObjects() — rez the board if present
+
+After the three existing `llRezObject` calls, add:
+
+```lsl
+if (llGetInventoryType(INV_MAP_BOARD) != INVENTORY_NONE)
+{
+    llRezObject(INV_MAP_BOARD, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    dbg("[CTL] Rezzed MapBoard.");
+}
+```
+
+`start_param=0` keeps all map_tile.lsl scripts inert (board mode). board_mover.lsl activates independently via `llGetNumberOfPrims()` check.
+
+The board does **not** increment `gSetupPending` — it is visual-only and the game does not need to wait for it.
+
+### handleControllerMessage() — handle BOARD_READY
+
+Add before the `GM_READY` handler:
+
+```lsl
+if (cmd == "BOARD_READY")
+{
+    gBoard_Key = sender;
+    dbg("[CTL] Board online: " + (string)gBoard_Key);
+    llRegionSayTo(gBoard_Key, CTRL,
+        "BOARD_CONFIG"
+        + "|" + (string)gGridOrigin.x
+        + "|" + (string)gGridOrigin.y
+        + "|" + (string)gGridOrigin.z
+        + "|" + (string)CELL_SIZE);
+    return;
+}
+```
+
+### cleanupObjects() — shut down board
+
+Add alongside the other SHUTDOWN sends:
+
+```lsl
+if (gBoard_Key != NULL_KEY)
+    llRegionSayTo(gBoard_Key, MAP_TILE, "SHUTDOWN");
+gBoard_Key = NULL_KEY;
+```
+
+Note: sent on MAP_TILE channel (not CTRL), because board_mover.lsl has removed itself and the remaining listener is map_tile.lsl's SHUTDOWN listener.
+
+### timer() — auto-clean stale board key
+
+Add alongside the existing builder auto-clean:
+
+```lsl
+if (gBoard_Key != NULL_KEY && llKey2Name(gBoard_Key) == "")
+{
+    dbg("[CTL] Board gone, auto-cleaning.");
+    gBoard_Key = NULL_KEY;
+}
+```
+
+---
+
+## Inventory Setup (updated)
+
+| Prim | Scripts added | Notes |
+|------|--------------|-------|
+| **MapBuilder** prim | `board_mover` (compiled script) | Builder delivers it to tile (0,0) at link time |
+| **Controller** prim | `MapBoard` (linked board object) | Added after "Link Tiles" → take to inventory |
+
+---
+
+## Edge Cases
+
+- **board_mover on a standalone tile:** `llGetNumberOfPrims() == 1` → stays inert. Safe to have the script in an unlinked tile.
+- **Board rezzed before controller sends BOARD_CONFIG:** board_mover.lsl listens indefinitely (no timeout). If the controller crashes, the board just sits at rez position.
+- **BOARD_READY arrives while game is in SETUP or WAVE state:** controller sends BOARD_CONFIG regardless of lifecycle state — board positioning is independent of game state.
+- **llGiveInventory fails (no board_mover in builder inventory):** `llGetInventoryType` guard prevents a runtime error; board is linked without board_mover. Owner sees no error — board_mover delivery is optional (board just won't auto-position).
+- **Cleanup race:** board_mover removes itself via `llRemoveInventory` after `llSetRegionPos`. The MAP_TILE SHUTDOWN listener in map_tile.lsl is already active from `on_rez`. No race.
+
+---
+
+## Verification
+
+1. Add `board_mover.lsl` (compiled) to MapBuilder prim inventory
+2. Build Map → after rezzing, "Link Tiles" → builder delivers board_mover to tile (0,0), then dies
+3. Take the linked board into controller inventory as "MapBoard"
+4. Touch controller → **Start Game** — confirm owner-say shows "[CTL] Rezzed MapBoard" then "[CTL] Board online"
+5. Board should snap to correct grid position (tiles aligned with game grid)
+6. Touch → **End Game** — confirm board disappears alongside GM/handler/spawner
+7. Touch → **Start Game** again — confirm board rezzes and positions again (board_mover still in inventory object)
