@@ -103,3 +103,4 @@ Maps are defined in `controller.lsl` as `loadMap_N()` functions. Each map is a 3
 - `llListReplaceList` on large lists allocates a new list — minimize calls during wave-active state.
 - `llRegionSayTo` (targeted) is strongly preferred over `llSay`/`llRegionSay` (broadcast) to avoid waking unintended listeners.
 - Enemy position reports (~0.5 s interval per enemy) are the dominant message volume source; this scales with wave count.
+- **`llRezObject` has a 10-metre limit** — objects cannot be rezzed more than 10m from the rezzer's position. Workaround: rez at the rezzer's own position, then have the rezzed object call `llSetRegionPos` (no distance limit) to move itself to the target location. Map tiles use this pattern: the builder rezzes all tiles at its own position, and each tile moves itself when it receives `MAP_DATA`.
