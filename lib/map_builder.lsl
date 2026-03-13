@@ -117,10 +117,21 @@ broadcastMapData()
 
 
 // =============================================================================
-// MAIN STATE
+// STATES
 // =============================================================================
 
+// default: dormant gate — only activates when rezzed by the controller (start_param=1).
+// Rezzed from inventory (start_param=0) stays inert.
 default
+{
+    on_rez(integer start_param)
+    {
+        if (start_param == 1) state active;
+    }
+}
+
+
+state active
 {
     state_entry()
     {
@@ -209,7 +220,9 @@ default
             }
 
             integer cell_type = llList2Integer(gCellTypes, gRezY * gMapW + gRezX);
-            integer param = cell_type * 10000 + gRezX * 100 + gRezY;
+            // Encoding: cell_type * 10000 + gx * 100 + gy + 1
+            // +1 ensures start_param is never 0, reserving 0 for inventory-rez detection.
+            integer param = cell_type * 10000 + gRezX * 100 + gRezY + 1;
             llRezObject(INV_TILE, tileRezPos(), ZERO_VECTOR, ZERO_ROTATION, param);
             gRezX++;
         }

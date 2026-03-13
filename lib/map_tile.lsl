@@ -4,7 +4,9 @@
 // =============================================================================
 // Rezzed by the MapBuilder, one per grid cell.
 //
-// start_param encoding: cell_type * 10000 + gx * 100 + gy
+// start_param encoding: cell_type * 10000 + gx * 100 + gy + 1
+//   +1 ensures 0 is never a valid encoded value; start_param=0 means rezzed
+//   from inventory and the script stays inert.
 //   cell_type: 0=blocked, 1=buildable, 2=path
 //   gx, gy: 0–99 each
 //
@@ -202,14 +204,18 @@ list dirOffset(string dir)
 // STATES
 // =============================================================================
 
-// default: dormant — just waiting for on_rez to decode start_param
+// default: dormant gate — only activates when rezzed by the builder (start_param != 0).
+// Rezzed from inventory (start_param=0) stays inert.
+// Encoding from builder: cell_type * 10000 + gx * 100 + gy + 1 (never zero).
 default
 {
     on_rez(integer start_param)
     {
-        // Decode: cell_type * 10000 + gx * 100 + gy
-        gCellType = start_param / 10000;
-        integer rem = start_param % 10000;
+        if (start_param == 0) return;
+        // Decode: subtract 1, then extract cell_type / gx / gy
+        integer decoded = start_param - 1;
+        gCellType = decoded / 10000;
+        integer rem = decoded % 10000;
         gGridX    = rem / 100;
         gGridY    = rem % 100;
         state active;

@@ -477,7 +477,7 @@ startMapBuilder()
     }
     loadMap(1);
     vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
-    llRezObject(INV_BUILDER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+    llRezObject(INV_BUILDER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 1);
     dbg("[CTL] Rezzed MapBuilder.");
 }
 
