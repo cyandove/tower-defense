@@ -74,11 +74,17 @@ float   gGridCellSize    = 0.0;
 integer gConfigured      = FALSE;
 
 // Tower type registry — loaded from tower_types.cfg notecard
-list    gTowerTypes       = [];   // [type_id, obj_name, label, notecard] stride=4
+list    gTowerTypes       = [];   // [type_id, obj_name, label, notecard, cost] stride=5
 integer gTypesLoaded      = FALSE;
 integer gGmConfigOk       = FALSE;
 key     gTypesQuery       = NULL_KEY;
 integer gTypesLine        = 0;
+
+// Placement economy
+integer gPlacementPool       = 0;
+list    gGrantedAvatars      = [];   // avatars who've received new-player grant
+integer PLACEMENT_START_POINTS = 3;
+integer KILL_POINTS            = 1;
 
 
 // =============================================================================
@@ -93,7 +99,7 @@ dbg(string msg)
 
 // =============================================================================
 // TOWER TYPE REGISTRY  — loaded from tower_types.cfg notecard
-// gTowerTypes stride=4: [type_id, obj_name, label, notecard]
+// gTowerTypes stride=5: [type_id, obj_name, label, notecard, cost]
 // =============================================================================
 
 string towerObjName(integer type_id)
@@ -108,6 +114,13 @@ string towerLabel(integer type_id)
     integer idx = llListFindList(gTowerTypes, [type_id]);
     if (idx == -1) return "";
     return llList2String(gTowerTypes, idx + 2);
+}
+
+integer towerCost(integer type_id)
+{
+    integer idx = llListFindList(gTowerTypes, [type_id]);
+    if (idx == -1) return 0;
+    return llList2Integer(gTowerTypes, idx + 4);
 }
 
 startTypesLoad()
@@ -125,18 +138,19 @@ parseTypesLine(string line)
 {
     if (line == "" || llGetSubString(line, 0, 0) == "#") return;
     list fields = llParseString2List(line, ["|"], []);
-    if (llGetListLength(fields) < 4) return;
+    if (llGetListLength(fields) < 5) return;
     gTowerTypes += [(integer)llList2String(fields, 0),
                     llList2String(fields, 1),
                     llList2String(fields, 2),
-                    llList2String(fields, 3)];
+                    llList2String(fields, 3),
+                    (integer)llList2String(fields, 4)];
 }
 
 onTypesLoaded()
 {
     gTypesLoaded = TRUE;
     dbg("[GM] tower_types.cfg loaded: "
-        + (string)(llGetListLength(gTowerTypes) / 4) + " types");
+        + (string)(llGetListLength(gTowerTypes) / 5) + " types");
     if (gGmConfigOk) gConfigured = TRUE;
     sendTowerLabels();
 }
@@ -147,10 +161,10 @@ sendTowerLabels()
     key handler = findRegisteredHandler();
     if (handler == NULL_KEY) return;
     string labels = "TOWER_LABELS";
-    integer count = llGetListLength(gTowerTypes) / 4;
+    integer count = llGetListLength(gTowerTypes) / 5;
     integer i;
     for (i = 0; i < count; i++)
-        labels += "|" + llList2String(gTowerTypes, i * 4 + 2);
+        labels += "|" + llList2String(gTowerTypes, i * 5 + 2);
     llRegionSayTo(handler, -2008, labels);
     dbg("[GM] Sent tower labels to handler");
 }
@@ -466,6 +480,8 @@ handleEnemyReport(key sender, string msg)
     {
         removeEnemyPosition(sender);
         deregisterObject(sender);
+        gPlacementPool += KILL_POINTS;
+        dbg("[GM] Kill +1 pool. Pool: " + (string)gPlacementPool);
         if (gCtrl_Key != NULL_KEY)
             llRegionSayTo(gCtrl_Key, -2013, "ENEMY_KILLED");
     }
@@ -618,6 +634,15 @@ handlePlacementRequest(key sender, string msg)
     integer gy = (integer)llList2String(parts, 2);
     key avatar = (key)llList2String(parts, 3);
 
+    // New-player grant: first time this avatar touches the grid
+    if (llListFindList(gGrantedAvatars, [(string)avatar]) == -1)
+    {
+        gGrantedAvatars += [(string)avatar];
+        gPlacementPool  += PLACEMENT_START_POINTS;
+        dbg("[GM] New player grant: +" + (string)PLACEMENT_START_POINTS
+            + " pool now " + (string)gPlacementPool);
+    }
+
     if (!inBounds(gx, gy))
     { denyPlacement(sender, gx, gy, avatar, "OUT_OF_BOUNDS"); return; }
 
@@ -673,7 +698,7 @@ handleCellData(string msg)
     // Tell handler to show the tower dialog
     llRegionSayTo(handler, -2008,
         "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy
-        + "|" + (string)avatar);
+        + "|" + (string)avatar + "|" + (string)gPlacementPool);
     dbg("[PL] Reserved (" + (string)gx + "," + (string)gy
         + ") for " + llKey2Name(avatar));
 }
@@ -698,6 +723,21 @@ handleTowerPlaceRequest(key sender, string msg)
 
     if (towerObjName(type_id) == "")
     { llOwnerSay("[PL] Unknown tower type: " + (string)type_id); return; }
+
+    integer cost = towerCost(type_id);
+    if (gPlacementPool < cost)
+    {
+        // Unreserve the cell
+        llRegionSayTo(gCtrl_Key, -2013,
+            "CELL_SET|" + (string)gx + "|" + (string)gy + "|0");
+        llRegionSayTo(avatar, 0,
+            "Not enough placement points. Pool: " + (string)gPlacementPool
+            + " / Cost: " + (string)cost);
+        return;
+    }
+    gPlacementPool -= cost;
+    dbg("[GM] Tower placed. Cost: " + (string)cost
+        + " Pool now: " + (string)gPlacementPool);
 
     // Mark occupied in controller and rez
     llRegionSayTo(gCtrl_Key, -2013,

@@ -216,16 +216,15 @@ integer labelToTypeId(string label)
     return idx + 1;
 }
 
-showTowerDialog(key avatar, integer gx, integer gy)
+showTowerDialog(key avatar, integer gx, integer gy, integer pool)
 {
     if (gTowerLabels == [])
     {
         llRegionSayTo(avatar, 0, "Tower types not loaded yet.");
         return;
     }
-    string prompt = "Select tower for grid ("
-        + (string)gx + "," + (string)gy + ").\n"
-        + "Expires in " + (string)DIALOG_TIMEOUT + "s.";
+    string prompt = "Pool: " + (string)pool + " pts\nSelect tower for ("
+        + (string)gx + "," + (string)gy + "):";
     integer handle = llListen(gDialogChannel, "", avatar, "");
     llDialog(avatar, prompt, gTowerLabels, gDialogChannel);
     addPendingDialog(avatar, gx, gy, handle);
@@ -278,7 +277,8 @@ handlePlacementResponse(string msg)
 
     if (cmd == "PLACEMENT_RESERVED")
     {
-        showTowerDialog(avatar, gx, gy);
+        integer pool = (integer)llList2String(parts, 4);
+        showTowerDialog(avatar, gx, gy, pool);
     }
     else if (cmd == "PLACEMENT_DENIED")
     {
