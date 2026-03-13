@@ -11,12 +11,15 @@
 //   gx, gy: 0–99 each
 //
 // FLOW:
-//   1. on_rez decodes start_param, stores gGridX/gGridY/gCellType.
-//   2. Waits in default state for MAP_DATA broadcast on MAP_TILE channel.
+//   1. on_rez decodes start_param. If 0 (inventory rez), stays inert.
+//      No llResetScript — all runtime state is reset manually in on_rez
+//      (same pattern as tower.lsl). on_rez does not re-fire after a reset,
+//      so start_param would be lost; manual reset avoids this.
+//   2. Waits for MAP_DATA broadcast on MAP_TILE channel.
 //   3. On MAP_DATA: stores full map, sets scale, moves self via llSetRegionPos
 //      to correct grid position (tiles rez at builder's origin to avoid the
 //      llRezObject 10m limit), then colours self by cell type.
-//   4. On touch: shows 12-button compass-rose dialog.
+//   4. On touch: shows 12-button compass-rose dialog (guarded by gMapReady).
 //   5. Dialog responses: neighbour buttons → OPEN_MENU broadcast; Set Tex →
 //      llTextBox; Clear → revert color; Done → close; center → reopen menu.
 //   6. On OPEN_MENU: if coords match self, show dialog for requested avatar.
@@ -201,47 +204,45 @@ list dirOffset(string dir)
 
 
 // =============================================================================
-// STATES
+// MAIN STATE
 // =============================================================================
 
-// default: dormant gate — only activates when rezzed by the builder (start_param != 0).
-// Rezzed from inventory (start_param=0) stays inert.
-// Encoding from builder: cell_type * 10000 + gx * 100 + gy + 1 (never zero).
 default
-{
-    on_rez(integer start_param)
-    {
-        if (start_param == 0) return;
-        // Decode: subtract 1, then extract cell_type / gx / gy
-        integer decoded = start_param - 1;
-        gCellType = decoded / 10000;
-        integer rem = decoded % 10000;
-        gGridX    = rem / 100;
-        gGridY    = rem % 100;
-        state active;
-    }
-}
-
-
-state active
 {
     state_entry()
     {
-        // Derive per-tile unique channels from prim key
-        // Use different substrings so menu and tex channels differ
+        // Derive per-tile unique channels from prim key.
+        // Computed here since llGetKey() is only valid after state_entry.
         gMenuChannel = -(integer)("0x" + llGetSubString((string)llGetKey(), 0, 6));
         gTexChannel  = -(integer)("0x" + llGetSubString((string)llGetKey(), 2, 8));
+    }
+
+    on_rez(integer start_param)
+    {
+        if (start_param == 0) return;  // rezzed from inventory — stay inert
+
+        // Decode: subtract 1, then extract cell_type / gx / gy.
+        // No llResetScript — reset runtime state manually (tower.lsl pattern).
+        integer decoded = start_param - 1;
+        gCellType   = decoded / 10000;
+        integer rem = decoded % 10000;
+        gGridX      = rem / 100;
+        gGridY      = rem % 100;
+
+        // Reset map and menu state for clean re-rez
+        gMapReady   = FALSE;
+        gMapW       = 10;
+        gMapH       = 10;
+        gCellSize   = 2.0;
+        gGridOrigin = ZERO_VECTOR;
+        gCellTypes  = [];
+        closeMenu();
 
         llListen(MAP_TILE,    "", NULL_KEY,     "");
         llListen(DBG_CHANNEL, "", llGetOwner(), "");
 
         applyColor(gCellType);
-
-        // Scale to cell size (set z thin, x and y to cell size)
-        // We'll update once MAP_DATA arrives with confirmed cell_size
         llSetScale(<gCellSize, gCellSize, 0.05>);
-
-        // Start cleanup timer
         llSetTimerEvent(10.0);
 
         dbg("[TILE] Active: (" + (string)gGridX + "," + (string)gGridY
@@ -250,6 +251,7 @@ state active
 
     touch_start(integer num)
     {
+        if (!gMapReady) return;
         showTileMenu(llDetectedKey(0));
     }
 
@@ -414,10 +416,5 @@ state active
             llListenRemove(gTexHandle);
             gTexHandle = 0;
         }
-    }
-
-    on_rez(integer start_param)
-    {
-        llResetScript();
     }
 }

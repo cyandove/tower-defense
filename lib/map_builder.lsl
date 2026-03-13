@@ -15,6 +15,9 @@
 //   4. Tracks each tile's key via object_rez. When all tiles are rezzed,
 //      broadcasts MAP_DATA (including grid origin) on MAP_TILE. Each tile
 //      calls llSetRegionPos to move itself to its correct grid position.
+//
+// NOTE: on_rez resets globals manually instead of calling llResetScript().
+// After llResetScript(), on_rez does not re-fire, so start_param is lost.
 //   5. On LINK_TILES: requests PERMISSION_CHANGE_LINKS, then iterates
 //      gTileKeys calling llCreateLink (1.0s server delay per call = ~100s).
 //      Reports progress every 10 tiles. After all linked, breaks self from
@@ -266,6 +269,21 @@ state active
 
     on_rez(integer start_param)
     {
-        llResetScript();
+        // Reset all state manually instead of llResetScript() — on_rez does
+        // not re-fire after a reset, so start_param would be lost.
+        gGridOrigin = ZERO_VECTOR;
+        gCellSize   = 2.0;
+        gMapW       = 10;
+        gMapH       = 10;
+        gCellTypes  = [];
+        gRezX       = 0;
+        gRezY       = 0;
+        gRezzing    = FALSE;
+        gTileKeys   = [];
+        gRezTotal   = 0;
+        gLinking    = FALSE;
+        gLinkIdx    = 0;
+        if (start_param == 1) state active;
+        else state default;
     }
 }
