@@ -317,9 +317,14 @@ state active
                     + "/" + (string)total + " tiles.");
         }
 
+        // Give board_mover to tile (0,0) — it becomes root after llBreakLink(1).
+        // Requires "board_mover" script to be in the builder prim's inventory.
+        if (llGetInventoryType("board_mover") != INVENTORY_NONE)
+            llGiveInventory(llList2Key(gTileKeys, 0), "board_mover");
+
         // Detach the builder itself from the linkset (link 1 = root = self after linking)
         llBreakLink(1);
-        llOwnerSay("[BLD] Board linked! Take it into inventory.");
+        llOwnerSay("[BLD] Board linked! Take it into controller inventory.");
         llDie();
     }
 

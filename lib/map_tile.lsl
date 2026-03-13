@@ -219,7 +219,13 @@ default
 
     on_rez(integer start_param)
     {
-        if (start_param == 0) return;  // rezzed from inventory — stay inert
+        if (start_param == 0)
+        {
+            // Rezzed as part of the linked MapBoard — stay visually inert
+            // but listen for SHUTDOWN so the controller can clean up the board.
+            llListen(MAP_TILE, "", NULL_KEY, "SHUTDOWN");
+            return;
+        }
 
         // Decode: subtract 1, then extract cell_type / gx / gy.
         // No llResetScript — reset runtime state manually (tower.lsl pattern).

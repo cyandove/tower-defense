@@ -100,10 +100,11 @@ integer MENU_DIALOG_TIMEOUT = 30;   // seconds before an unanswered dialog is cu
 // -----------------------------------------------------------------------------
 // INVENTORY NAMES  -  must match prim names in this object's inventory
 // -----------------------------------------------------------------------------
-string INV_GM      = "GameManager";
-string INV_HANDLER = "PlacementHandler";
-string INV_SPAWNER = "Spawner";
-string INV_BUILDER = "MapBuilder";
+string INV_GM        = "GameManager";
+string INV_HANDLER   = "PlacementHandler";
+string INV_SPAWNER   = "Spawner";
+string INV_BUILDER   = "MapBuilder";
+string INV_MAP_BOARD = "MapBoard";
 
 
 // -----------------------------------------------------------------------------
@@ -133,6 +134,7 @@ key     gGM_Key       = NULL_KEY;
 key     gSpawner_Key  = NULL_KEY;
 key     gHandler_Key  = NULL_KEY;
 key     gBuilder_Key  = NULL_KEY;
+key     gBoard_Key    = NULL_KEY;
 integer gLifecycle    = 0;    // STATE_* value
 integer gLives        = 0;
 integer gScore        = 0;
@@ -365,6 +367,12 @@ rezAllObjects()
     llRezObject(INV_SPAWNER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
     dbg("[CTL] Rezzed spawner near controller.");
 
+    if (llGetInventoryType(INV_MAP_BOARD) != INVENTORY_NONE)
+    {
+        llRezObject(INV_MAP_BOARD, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+        dbg("[CTL] Rezzed MapBoard.");
+    }
+
     gSetupPending = 3;   // waiting for GM + handler + spawner to register
     gLifecycle    = STATE_SETUP;
 }
@@ -582,12 +590,14 @@ cleanupObjects()
     // Ask all managed objects to deregister and die.
     // We broadcast on GM_DEREGISTER so each script hears it.
     // Objects with on_rez/llDie handle their own cleanup.
-    if (gGM_Key      != NULL_KEY) llRegionSayTo(gGM_Key,      CTRL, "SHUTDOWN");
-    if (gHandler_Key != NULL_KEY) llRegionSayTo(gHandler_Key, CTRL, "SHUTDOWN");
-    if (gSpawner_Key != NULL_KEY) llRegionSayTo(gSpawner_Key, CTRL, "SHUTDOWN");
+    if (gGM_Key      != NULL_KEY) llRegionSayTo(gGM_Key,      CTRL,     "SHUTDOWN");
+    if (gHandler_Key != NULL_KEY) llRegionSayTo(gHandler_Key, CTRL,     "SHUTDOWN");
+    if (gSpawner_Key != NULL_KEY) llRegionSayTo(gSpawner_Key, CTRL,     "SHUTDOWN");
+    if (gBoard_Key   != NULL_KEY) llRegionSayTo(gBoard_Key,   MAP_TILE, "SHUTDOWN");
     gGM_Key      = NULL_KEY;
     gHandler_Key = NULL_KEY;
     gSpawner_Key = NULL_KEY;
+    gBoard_Key   = NULL_KEY;
     gLifecycle   = STATE_IDLE;
 }
 
@@ -614,6 +624,20 @@ handleControllerMessage(key sender, string msg)
 {
     list parts  = llParseString2List(msg, ["|"], []);
     string cmd  = llList2String(parts, 0);
+
+    // Board announces itself after rezzing (from board_mover.lsl)
+    if (cmd == "BOARD_READY")
+    {
+        gBoard_Key = sender;
+        dbg("[CTL] Board online: " + (string)gBoard_Key);
+        llRegionSayTo(gBoard_Key, CTRL,
+            "BOARD_CONFIG"
+            + "|" + (string)gGridOrigin.x
+            + "|" + (string)gGridOrigin.y
+            + "|" + (string)gGridOrigin.z
+            + "|" + (string)CELL_SIZE);
+        return;
+    }
 
     // MapBuilder announces itself after rezzing
     if (cmd == "BUILDER_READY")
@@ -962,6 +986,12 @@ default
             gBuilder_Key = NULL_KEY;
             gMap       = [];
             gWaypoints = [];
+        }
+        // Auto-clean stale board
+        if (gBoard_Key != NULL_KEY && llKey2Name(gBoard_Key) == "")
+        {
+            dbg("[CTL] Board gone, auto-cleaning.");
+            gBoard_Key = NULL_KEY;
         }
         cullStaleMenuDialogs();
     }

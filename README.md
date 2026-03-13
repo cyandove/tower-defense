@@ -16,6 +16,9 @@ The game runs as a set of cooperating scripts, each living in its own prim. Only
 | `placement_handler.lsl` | PlacementHandler | Touch-to-grid translation, tower selection dialog |
 | `tower.lsl` | Tower | Attack cycle, hit resolution |
 | `enemy.lsl` | Enemy | Waypoint movement, damage handling |
+| `map_tile.lsl` | MapTile (board) | Visual map board tile; interactive cell editor when built |
+| `map_builder.lsl` | MapBuilder | In-world map design tool; rezzes and links tiles |
+| `board_mover.lsl` | MapBoard root tile | Auto-positions the linked board on rez, then removes itself |
 
 ---
 
@@ -42,9 +45,10 @@ The controller prim's inventory must contain these objects (names must match exa
 | `GameManager` | `game_manager.lsl` |
 | `PlacementHandler` | `placement_handler.lsl` |
 | `Spawner` | `spawner.lsl` |
-| `MapBuilder` _(optional)_ | `map_builder.lsl`, `MapTile` object |
+| `MapBuilder` _(optional)_ | `map_builder.lsl`, `board_mover` script, `MapTile` object |
+| `MapBoard` _(optional)_ | Linked 100-prim board built by Map Builder |
 
-The `MapBuilder` object is only required if you intend to use the [Map Builder](#map-builder) tool. See that section for how to prepare the `MapBuilder` and `MapTile` objects.
+`MapBuilder` and `MapBoard` are only required if you intend to use the [Map Builder](#map-builder) tool. See that section for how to prepare these objects. `MapBoard` is rezzed automatically at setup and auto-positioned over the game grid.
 
 ### Step 2 — Prepare the GameManager prim
 
@@ -246,7 +250,13 @@ Off-grid neighbor buttons show `---`.
 
 ### Finishing the board
 
-After texturing, touch the controller and select **Link Tiles**. The builder links all 100 tiles into a single linkset — this takes ~100 seconds (one `llCreateLink` call per tile with a mandatory 1s delay each). Progress is reported every 10 tiles. When complete the builder announces `Board linked!` and removes itself. Take the 100-prim linkset into inventory.
+After texturing, touch the controller and select **Link Tiles**. The builder links all 100 tiles into a single linkset — this takes ~100 seconds (one `llCreateLink` call per tile with a mandatory 1s delay each). Progress is reported every 10 tiles.
+
+Before breaking away from the linkset, the builder automatically delivers the compiled `board_mover` script into the root tile (tile `(0,0)`). When complete the builder announces `Board linked! Take it into controller inventory.` and removes itself. Take the 100-prim linkset into the **controller prim's inventory** and name it **`MapBoard`**.
+
+The next time the controller starts a game, it rezzes the `MapBoard` automatically. The `board_mover` script activates, announces itself to the controller, receives the grid origin and cell size, calls `llSetRegionPos` to snap the board into position, then removes itself — leaving the board in place with no persistent scripts beyond `map_tile.lsl`'s lightweight SHUTDOWN listener.
+
+On game over or reset the controller sends `SHUTDOWN` to the board and it removes itself from the region.
 
 To discard without linking, select **Clean Up Map** — all tiles and the builder are removed immediately.
 
@@ -255,8 +265,9 @@ To discard without linking, select **Clean Up Map** — all tiles and the builde
 The `MapBuilder` and `MapTile` objects must be created once and stored in the appropriate inventories:
 
 1. Create a flat box prim (z-scale `0.05`), name it **`MapTile`**, add `map_tile.lsl` inside, then take it into inventory.
-2. Create a prim, name it **`MapBuilder`**, add `map_builder.lsl` and the `MapTile` object inside, then take it into inventory.
+2. Create a prim, name it **`MapBuilder`**, add `map_builder.lsl`, the compiled `board_mover` script, and the `MapTile` object inside, then take it into inventory.
 3. Place the `MapBuilder` object in the **controller prim's inventory** alongside `GameManager`, `PlacementHandler`, and `Spawner`.
+4. After building a board (see above), place the resulting **`MapBoard`** linkset in the controller prim's inventory. The board auto-positions itself each time the game is set up.
 
 ---
 
