@@ -34,56 +34,64 @@ plan.md        — phased development log
 
 ---
 
+## Object hierarchy
+
+Every object that appears in-world is either placed manually (the controller) or rezzed from another object's inventory. Inventory names must match exactly. Items marked _(optional)_ are only needed for the Map Builder workflow.
+
+```
+Controller prim  (placed manually in-world)
+├── controller.lsl
+├── controller-animations.lsl          (optional)
+└── [inventory objects — rezzed at game setup]
+    ├── GameManager
+    │   ├── game_manager.lsl
+    │   ├── tower_types.cfg
+    │   └── Tower                      (rezzed per player tower placement)
+    │       ├── tower.lsl
+    │       ├── tower-animations.lsl   (optional)
+    │       ├── tower_types.cfg
+    │       ├── tower_basic.cfg
+    │       └── tower_sniper.cfg       (add one .cfg per tower type)
+    ├── PlacementHandler
+    │   └── placement_handler.lsl
+    ├── Spawner
+    │   ├── spawner.lsl
+    │   ├── spawner.cfg
+    │   └── Enemy                      (rezzed each wave)
+    │       ├── enemy.lsl
+    │       └── enemy-animations.lsl   (optional)
+    ├── MapBuilder                     (optional — map design tool)
+    │   ├── map_builder.lsl
+    │   ├── board_mover                (compiled script — auto-delivered to board root at link time)
+    │   └── MapTile                    (rezzed during map building, 100 total)
+    │       └── map_tile.lsl
+    └── MapBoard                       (optional — linked 100-prim board)
+        ├── [root tile (0,0)]
+        │   ├── board_mover.lsl        (positions board on rez, then removes itself)
+        │   └── map_tile.lsl
+        └── [tiles 1–99]
+            └── map_tile.lsl
+```
+
+---
+
 ## In-world setup
 
-### Step 1 — Prepare the controller prim
+### Prepare the prims
 
-The controller prim's inventory must contain these objects (names must match exactly):
+Build each prim once, populate its inventory as shown in the hierarchy above, and take it into inventory. Key points:
 
-| Inventory item | Scripts / objects inside |
-|---|---|
-| `GameManager` | `game_manager.lsl` |
-| `PlacementHandler` | `placement_handler.lsl` |
-| `Spawner` | `spawner.lsl` |
-| `MapBuilder` _(optional)_ | `map_builder.lsl`, `board_mover` script, `MapTile` object |
-| `MapBoard` _(optional)_ | Linked 100-prim board built by Map Builder |
+- **Tower** — must contain `tower_types.cfg` plus a stats notecard for every tower type it may be used as (the script reads `tower_types.cfg` first to find which stats notecard to load).
+- **GameManager** — must contain a `Tower` object (or one object per distinct tower type name if you use different prim shapes per type).
+- **MapBuilder** — must contain the compiled `board_mover` script; the builder delivers it automatically to the root tile when linking.
+- **MapBoard** — built by the Map Builder tool; see the [Map Builder](#map-builder) section.
 
-`MapBuilder` and `MapBoard` are only required if you intend to use the [Map Builder](#map-builder) tool. See that section for how to prepare these objects. `MapBoard` is rezzed automatically at setup and auto-positioned over the game grid.
-
-### Step 2 — Prepare the GameManager prim
-
-The GameManager prim's inventory must contain one object for each tower type. By default all types share a single object:
-
-| Inventory item | Script inside |
-|---|---|
-| `Tower` | `tower.lsl` |
-
-If you add tower types with distinct object names (see [Adding a custom tower type](#adding-a-custom-tower-type)), add a corresponding object for each name.
-
-### Step 3 — Prepare the Spawner prim
-
-The Spawner prim's inventory must contain:
-
-| Inventory item | Script inside |
-|---|---|
-| `Enemy` | `enemy.lsl` |
-| `spawner.cfg` | Enemy stats notecard |
-
-### Step 4 — Prepare the Tower prim
-
-The Tower prim's inventory must contain the appropriate config notecard for each tower type:
-
-| Notecard | Tower type |
-|---|---|
-| `tower_basic.cfg` | Basic Tower (type ID 1) |
-| `tower_sniper.cfg` | Sniper Tower (type ID 2) |
-
-### Step 5 — Place and start
+### Place and start
 
 1. Place **only the controller prim** at the **south-west corner** of your intended grid area. Its position becomes the `(0,0)` grid origin.
 2. Set `CELL_SIZE` in `controller.lsl` to match your in-world metre scale (default `2.0`).
-3. **Touch the controller** to begin setup. It rezzes the GM, placement handler, and spawner, sends each its config, and waits for all three to report ready.
-4. Once chat shows `[CTL] Ready. Touch to start wave 1.`, **touch the controller again** to start wave 1.
+3. **Touch the controller** to begin setup. It rezzes the GM, placement handler, spawner, and (if present) the MapBoard, sends each its config, and waits for all three core objects to report ready.
+4. Once chat shows `[CTL] Ready. Touch to start wave 1.`, **touch the controller again** to open the wave menu.
 
 The placement handler (a flat prim covering the grid) can be touched by any player to open the tower selection dialog.
 
