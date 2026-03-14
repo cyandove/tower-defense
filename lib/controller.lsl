@@ -72,7 +72,7 @@ integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 // -----------------------------------------------------------------------------
 // GRID GEOMETRY
-// Set CELL_SIZE to match your intended in-world scale.
+// Defaults here; overridden by notecard at map load time.
 // The controller prim's position is used as gGridOrigin.
 // -----------------------------------------------------------------------------
 float   CELL_SIZE  = 2.0;
@@ -104,7 +104,6 @@ string INV_GM        = "GameManager";
 string INV_HANDLER   = "PlacementHandler";
 string INV_SPAWNER   = "Spawner";
 string INV_BUILDER   = "MapBuilder";
-string INV_MAP_BOARD = "MapBoard";
 
 
 // -----------------------------------------------------------------------------
@@ -144,6 +143,12 @@ integer gWaveClearTimer = 0;  // countdown ticks for WAVE_CLEAR delay
 integer gSetupPending = 0;    // objects rezzed but not yet registered
 integer gMenuChannel  = 0;    // derived from prim key in state_entry
 list    gMenuDialogs  = [];   // [handle, avatar_key, expiry]  stride=3
+key     gMapQuery     = NULL_KEY;   // in-flight notecard line request
+integer gMapLine      = 0;          // current notecard line
+integer gMapEntryX    = 2;          // entry cell x (from notecard or fallback)
+integer gMapLoadMode  = 0;          // 1=game setup  2=map builder
+string  gMapNotecard  = "map_1.cfg";
+string  gMapBoardName = "MapBoard"; // overridden by board_name= notecard field
 
 
 // =============================================================================
@@ -163,9 +168,9 @@ dbg(string msg)
 // No setCell() calls  -  pre-encoded to avoid any llListReplaceList at init time.
 // Returns the entry cell x coordinate (entry is always on y=0 for this map set).
 
-integer loadMap_1()
+loadMap_1()
 {
-    // Map 1  -  S-bend path
+    // Map 1  -  S-bend path (fallback when map_1.cfg is absent)
     // y0: X X P B B B B B B B
     // y1: B B P B B B B B B B
     // y2: B B P B B B B B B B
@@ -187,23 +192,11 @@ integer loadMap_1()
     gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
     gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
     gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 0,0,0, 0,0,0];
-    return 2;   // entry cell x on y=0
+    gMapEntryX = 2;
 }
 
 // Stub for a second map  -  add row data here when ready.
-// integer loadMap_2() { gMap = []; gMap += [...]; ... return entry_x; }
-
-loadMap(integer map_id)
-{
-    integer entry_x;
-    if (map_id == 1) entry_x = loadMap_1();
-    else             entry_x = loadMap_1();   // fallback to map 1
-
-    dbg("[CTL] Map " + (string)map_id + " loaded. Mem: "
-        + (string)llGetFreeMemory() + "b");
-
-    deriveWaypoints(entry_x, 0);
-}
+// loadMap_2() { gMapEntryX = ...; gMap = []; gMap += [...]; }
 
 
 // =============================================================================
@@ -367,9 +360,9 @@ rezAllObjects()
     llRezObject(INV_SPAWNER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
     dbg("[CTL] Rezzed spawner near controller.");
 
-    if (llGetInventoryType(INV_MAP_BOARD) != INVENTORY_NONE)
+    if (llGetInventoryType(gMapBoardName) != INVENTORY_NONE)
     {
-        llRezObject(INV_MAP_BOARD, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 99999);
+        llRezObject(gMapBoardName, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 99999);
         dbg("[CTL] Rezzed MapBoard.");
     }
 
@@ -483,10 +476,7 @@ startMapBuilder()
         llOwnerSay("[CTL] Missing inventory: " + INV_BUILDER);
         return;
     }
-    loadMap(1);
-    vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
-    llRezObject(INV_BUILDER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 1);
-    dbg("[CTL] Rezzed MapBuilder.");
+    startMapLoad("map_1.cfg", 2);
 }
 
 cleanupBuilder()
@@ -501,6 +491,51 @@ cleanupBuilder()
 }
 
 
+// =============================================================================
+// MAP NOTECARD LOADING
+// Async: startMapLoad() kicks off llGetNotecardLine; dataserver() processes
+// each line; onMapLoaded() fires when EOF is reached (or on sync fallback).
+// =============================================================================
+
+startMapLoad(string notecard, integer mode)
+{
+    if (llGetInventoryType(notecard) == INVENTORY_NONE)
+    {
+        llOwnerSay("[CTL] '" + notecard + "' not found — using built-in map.");
+        MAP_W = 10; MAP_H = 10; CELL_SIZE = 2.0;
+        gMapBoardName = "MapBoard";
+        loadMap_1();
+        deriveWaypoints(gMapEntryX, 0);
+        onMapLoaded(mode);
+        return;
+    }
+    gMap          = [];
+    gWaypoints    = [];
+    gMapNotecard  = notecard;
+    gMapLoadMode  = mode;
+    gMapLine      = 0;
+    gMapEntryX    = 2;
+    gMapBoardName = "MapBoard";
+    MAP_W = 10; MAP_H = 10; CELL_SIZE = 2.0;
+    gMapQuery = llGetNotecardLine(notecard, 0);
+}
+
+onMapLoaded(integer mode)
+{
+    dbg("[CTL] Map loaded " + (string)MAP_W + "x" + (string)MAP_H
+        + " cs=" + (string)CELL_SIZE
+        + " mem=" + (string)llGetFreeMemory() + "b");
+    if (mode == 1)
+        rezAllObjects();
+    else if (mode == 2)
+    {
+        vector rez_pos = llGetPos() + <0.0, 0.0, 0.5>;
+        llRezObject(INV_BUILDER, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 1);
+        dbg("[CTL] Rezzed MapBuilder.");
+    }
+}
+
+
 startSetup()
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
@@ -511,8 +546,7 @@ startSetup()
     gEnemiesOut = 0;
 
     dbg("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
-    loadMap(1);
-    rezAllObjects();
+    startMapLoad("map_1.cfg", 1);
 }
 
 enterWaiting()
@@ -973,6 +1007,48 @@ default
         }
         else if (channel == gMenuChannel)
             handleMenuResponse(id, msg);
+    }
+
+    dataserver(key id, string data)
+    {
+        if (id != gMapQuery) return;
+        if (data == EOF)
+        {
+            deriveWaypoints(gMapEntryX, 0);
+            onMapLoaded(gMapLoadMode);
+            return;
+        }
+        string t = llStringTrim(data, STRING_TRIM);
+        if (t == "" || llGetSubString(t, 0, 0) == "#")
+        {
+            gMapQuery = llGetNotecardLine(gMapNotecard, ++gMapLine);
+            return;
+        }
+        integer eq = llSubStringIndex(t, "=");
+        if (eq > 0)
+        {
+            string k = llGetSubString(t, 0, eq - 1);
+            string v = llGetSubString(t, eq + 1, -1);
+            if      (k == "map_w")      MAP_W         = (integer)v;
+            else if (k == "map_h")      MAP_H         = (integer)v;
+            else if (k == "cell_size")  CELL_SIZE     = (float)v;
+            else if (k == "entry_x")    gMapEntryX    = (integer)v;
+            else if (k == "board_name") gMapBoardName = v;
+            else if (llGetSubString(k, 0, 3) == "row_")
+            {
+                integer x;
+                for (x = 0; x < MAP_W; x++)
+                {
+                    string ch = llGetSubString(v, x, x);
+                    integer ct;
+                    if      (ch == "P") ct = 2;
+                    else if (ch == "B") ct = 1;
+                    else                ct = 0;
+                    gMap += [ct, 0, 0];
+                }
+            }
+        }
+        gMapQuery = llGetNotecardLine(gMapNotecard, ++gMapLine);
     }
 
     timer()

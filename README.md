@@ -26,7 +26,7 @@ The game runs as a set of cooperating scripts, each living in its own prim. Only
 
 ```
 lib/           — LSL scripts (.lsl) and config notecards (.cfg)
-  config/      — tower and enemy stat notecards
+  config/      — tower and enemy stat notecards, map notecards (map_1.cfg, …)
   animations/  — optional animation layer scripts
 docs/          — design notes per phase
 plan.md        — phased development log
@@ -89,7 +89,7 @@ Build each prim once, populate its inventory as shown in the hierarchy above, an
 ### Place and start
 
 1. Place **only the controller prim** at the **south-west corner** of your intended grid area. Its position becomes the `(0,0)` grid origin.
-2. Set `CELL_SIZE` in `controller.lsl` to match your in-world metre scale (default `2.0`).
+2. Drop your map notecard (e.g. `map_1.cfg`) into the controller prim's inventory. Grid dimensions and cell size are read from the notecard — no script editing needed. If no notecard is found the controller falls back to the built-in S-bend map.
 3. **Touch the controller** to begin setup. It rezzes the GM, placement handler, spawner, and (if present) the MapBoard, sends each its config, and waits for all three core objects to report ready.
 4. Once chat shows `[CTL] Ready. Touch to start wave 1.`, **touch the controller again** to open the wave menu.
 
@@ -215,16 +215,48 @@ This label appears as a button in the `llDialog` tower selection popup. Note tha
 
 ## Map definitions
 
-Maps are defined as `loadMap_N()` functions in `controller.lsl`. Each map is a 300-entry list (10×10 grid, stride 3: `[type, occupied, 0]`).
+Maps are stored as notecards in `lib/config/`. The controller reads `map_1.cfg` at startup using async `llGetNotecardLine` calls — no script recompilation needed to change or add maps.
 
-Cell types:
-- `0` — blocked (impassable, unbuildable)
-- `1` — buildable (tower can be placed here)
-- `2` — path (enemy route)
+### Notecard format
 
-The entry cell is the path cell on `y=0` (the first row). `loadMap()` calls `deriveWaypoints()` automatically — no manual waypoint authoring needed.
+```
+# map_1.cfg
+# Cell types: X=blocked  B=buildable  P=path
 
-To add a new map: write a `loadMap_2()` function and add a branch in `loadMap()`. To design a map interactively in-world, use the [Map Builder](#map-builder).
+map_w=10
+map_h=10
+cell_size=2.0
+entry_x=2
+board_name=MapBoard
+row_0=XXPBBBBBBB
+row_1=BBPBBBBBBB
+...
+row_9=BBPBBBBBXB
+```
+
+| Field | Description |
+|---|---|
+| `map_w`, `map_h` | Grid dimensions in cells |
+| `cell_size` | Metres per cell side (controls in-world scale) |
+| `entry_x` | X coordinate of the first path cell on `y=0` (enemy entry) |
+| `board_name` | Inventory name of the MapBoard object to rez (default `MapBoard`) |
+| `row_0` … `row_N` | Compact cell string — one character per column: `X`=blocked, `B`=buildable, `P`=path |
+
+`map_w` / `map_h` / `cell_size` must appear **before** any `row_N` line. `#` and blank lines are ignored.
+
+The entry cell is the path cell on `y=0` (the first row). `deriveWaypoints()` is called automatically after loading — no manual waypoint authoring needed.
+
+### Fallback
+
+If the notecard is missing, the controller falls back to the built-in S-bend map (`loadMap_1()`) and prints a notice to owner chat.
+
+### Adding a new map
+
+1. Create `lib/config/map_2.cfg` (or any name) with the fields above.
+2. Drop it into the controller prim's inventory.
+3. Change the notecard name in `startMapLoad()` in `controller.lsl`, or add a menu option that calls `startMapLoad("map_2.cfg", 1)`.
+
+To design a map interactively in-world, use the [Map Builder](#map-builder).
 
 ---
 
@@ -260,11 +292,13 @@ Off-grid neighbor buttons show `---`.
 
 After texturing, touch the controller and select **Link Tiles**. The builder links all 100 tiles into a single linkset — this takes ~100 seconds (one `llCreateLink` call per tile with a mandatory 1s delay each). Progress is reported every 10 tiles.
 
-Before breaking away from the linkset, the builder automatically delivers the compiled `board_mover` script into the root tile (tile `(0,0)`). When complete the builder announces `Board linked! Take it into controller inventory.` and removes itself. Take the 100-prim linkset into the **controller prim's inventory** and name it **`MapBoard`**.
+Before breaking away from the linkset, the builder automatically delivers the compiled `board_mover` script into the root tile (tile `(0,0)`). When complete the builder announces `Board linked! Take it into controller inventory.` and removes itself. Take the 100-prim linkset into the **controller prim's inventory** and name it **`MapBoard`** (or whatever `board_name` you set in your map notecard).
 
 The next time the controller starts a game, it rezzes the `MapBoard` automatically. The `board_mover` script activates, announces itself to the controller, receives the grid origin and cell size, calls `llSetRegionPos` to snap the board into position, then removes itself — leaving the board in place with no persistent scripts beyond `map_tile.lsl`'s lightweight SHUTDOWN listener.
 
 On game over or reset the controller sends `SHUTDOWN` to the board and it removes itself from the region.
+
+To export your tile layout as a map notecard, touch the controller and select **Export Map**. The controller prints the notecard content to owner chat in the format described in [Map definitions](#map-definitions). Create a new notecard, paste the output, drop it into the controller prim's inventory, then `/td ctl reset` and start a new game — no LSL editing required.
 
 To discard without linking, select **Clean Up Map** — all tiles and the builder are removed immediately.
 

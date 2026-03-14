@@ -206,26 +206,27 @@ state active
                 }
                 if (entry_x == -1)
                     llOwnerSay("[BLD] WARNING: no path cell on y=0");
-                llOwnerSay("[BLD] --- COPY FROM NEXT LINE ---");
-                llOwnerSay("integer loadMap_N()");
-                llOwnerSay("{");
-                llOwnerSay("    gMap = [];");
+                llOwnerSay("[BLD] --- CREATE NOTECARD, PASTE BELOW ---");
+                llOwnerSay("# map_N.cfg");
+                llOwnerSay("# Cell types: X=blocked  B=buildable  P=path");
+                llOwnerSay("map_w="     + (string)gMapW);
+                llOwnerSay("map_h="     + (string)gMapH);
+                llOwnerSay("cell_size=" + (string)gCellSize);
+                llOwnerSay("entry_x="   + (string)entry_x);
+                llOwnerSay("board_name=MapBoard");
                 integer y;
                 for (y = 0; y < gMapH; y++)
                 {
-                    string row = "    gMap += [";
+                    string row = "row_" + (string)y + "=";
                     for (x = 0; x < gMapW; x++)
                     {
-                        integer t = llList2Integer(gCellTypes, y * gMapW + x);
-                        row += (string)t + ",0,0";
-                        if (x < gMapW - 1) row += ", ";
+                        integer tp = llList2Integer(gCellTypes, y * gMapW + x);
+                        if      (tp == 2) row += "P";
+                        else if (tp == 1) row += "B";
+                        else              row += "X";
                     }
-                    row += "]; // y" + (string)y;
                     llOwnerSay(row);
                 }
-                llOwnerSay("    return " + (string)entry_x
-                    + ";   // entry cell x on y=0");
-                llOwnerSay("}");
                 llOwnerSay("[BLD] --- END ---");
                 return;
             }
