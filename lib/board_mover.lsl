@@ -11,15 +11,16 @@
 // listener which is active in all tiles when start_param == 0.
 //
 // ACTIVATION GUARD:
-//   llGetRezzingObject() == NULL_KEY means rezzed from an avatar's inventory — stays inert.
-//   Only activates when rezzed by an in-world object (the controller).
+//   Avatar inventory rez always passes start_param == 0 — stays inert.
+//   Only activates when start_param == BOARD_PARAM (set by the controller's llRezObject call).
 //
 // CHANNELS:
 //   CTRL = -2013   controller <-> board_mover
 // =============================================================================
 
-integer CTRL    = -2013;
-integer gHandle = 0;
+integer CTRL        = -2013;
+integer BOARD_PARAM = 99999;   // sentinel passed by controller; never sent by avatar inventory rez
+integer gHandle     = 0;
 
 default
 {
@@ -27,9 +28,9 @@ default
 
     on_rez(integer start_param)
     {
-        // Only activate when rezzed by an in-world object (the controller).
-        // Rezzed from an avatar's inventory: llGetRezzingObject() == NULL_KEY — stay inert.
-        if (llGetRezzingObject() == NULL_KEY) return;
+        // Only activate when rezzed by the controller (start_param == BOARD_PARAM).
+        // Avatar inventory rez always produces start_param == 0 — stay inert.
+        if (start_param != BOARD_PARAM) return;
         gHandle = llListen(CTRL, "", NULL_KEY, "");
         llSay(CTRL, "BOARD_READY");
     }

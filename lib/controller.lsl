@@ -369,7 +369,7 @@ rezAllObjects()
 
     if (llGetInventoryType(INV_MAP_BOARD) != INVENTORY_NONE)
     {
-        llRezObject(INV_MAP_BOARD, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 0);
+        llRezObject(INV_MAP_BOARD, rez_pos, ZERO_VECTOR, ZERO_ROTATION, 99999);
         dbg("[CTL] Rezzed MapBoard.");
     }
 

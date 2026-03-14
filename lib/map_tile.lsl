@@ -219,11 +219,14 @@ default
 
     on_rez(integer start_param)
     {
-        if (start_param == 0)
+        if (start_param == 0 || start_param == 99999)
         {
-            // Rezzed as part of the linked MapBoard — stay visually inert
-            // but listen for SHUTDOWN so the controller can clean up the board.
-            llListen(MAP_TILE, "", NULL_KEY, "SHUTDOWN");
+            // Board mode: rezzed as part of the linked MapBoard.
+            //   start_param == 0     — rezzed from avatar inventory (stay completely inert)
+            //   start_param == 99999 — rezzed by the controller (BOARD_PARAM sentinel);
+            //                         listen for SHUTDOWN so the controller can clean up.
+            if (start_param == 99999)
+                llListen(MAP_TILE, "", NULL_KEY, "SHUTDOWN");
             return;
         }
 
