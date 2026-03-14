@@ -630,9 +630,10 @@ handleControllerMessage(key sender, string msg)
     {
         gBoard_Key = sender;
         dbg("[CTL] Board online: " + (string)gBoard_Key);
-        // Root tile (0,0) target position — mirrors HANDLER_CONFIG pattern.
-        vector target_board = <gGridOrigin.x + CELL_SIZE * 0.5,
-                               gGridOrigin.y + CELL_SIZE * 0.5,
+        // Root tile target position — the last tile linked (tile MAP_W-1, MAP_H-1)
+        // becomes link 1 (root) after the builder detaches. Mirrors HANDLER_CONFIG pattern.
+        vector target_board = <gGridOrigin.x + (MAP_W - 0.5) * CELL_SIZE,
+                               gGridOrigin.y + (MAP_H - 0.5) * CELL_SIZE,
                                gGridOrigin.z + 0.1>;
         llRegionSayTo(gBoard_Key, CTRL,
             "BOARD_CONFIG"

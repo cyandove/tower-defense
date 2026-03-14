@@ -317,10 +317,13 @@ state active
                     + "/" + (string)total + " tiles.");
         }
 
-        // Give board_mover to tile (0,0) — it becomes root after llBreakLink(1).
+        // Give board_mover to the LAST tile linked — it becomes root (link 1) after
+        // llBreakLink(1) removes the builder. Each llCreateLink(tile, TRUE) inserts
+        // the new tile at link 2, so the last tile linked ends up at link 2 and becomes
+        // link 1 (root) when the builder (link 1) detaches.
         // Requires "board_mover" script to be in the builder prim's inventory.
         if (llGetInventoryType("board_mover") != INVENTORY_NONE)
-            llGiveInventory(llList2Key(gTileKeys, 0), "board_mover");
+            llGiveInventory(llList2Key(gTileKeys, total - 1), "board_mover");
 
         // Detach the builder itself from the linkset (link 1 = root = self after linking)
         llBreakLink(1);
