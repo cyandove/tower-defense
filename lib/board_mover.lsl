@@ -4,11 +4,12 @@
 // =============================================================================
 // Lives in the root prim (tile 0,0) of the linked MapBoard.
 // On rez: announces BOARD_READY on CTRL channel, waits for BOARD_CONFIG from
-// the controller, calls llSetRegionPos to move the whole linkset to the correct
-// grid position, then removes itself via llRemoveInventory.
+// the controller containing the pre-computed target position (x|y|z), calls
+// llSetRegionPos to move the whole linkset, then removes itself via llRemoveInventory.
+// Mirrors how PlacementHandler receives and applies HANDLER_CONFIG.
 //
 // Cleanup (llDie on the whole linkset) is handled by map_tile.lsl's SHUTDOWN
-// listener which is active in all tiles when start_param == 0.
+// listener which is active in all tiles when start_param == BOARD_PARAM.
 //
 // ACTIVATION GUARD:
 //   Avatar inventory rez always passes start_param == 0 — stays inert.
@@ -42,15 +43,11 @@ default
 
         if (cmd == "BOARD_CONFIG")
         {
-            // BOARD_CONFIG|ox|oy|oz|cell_size
-            if (llGetListLength(parts) < 5) return;
-            float ox = (float)llList2String(parts, 1);
-            float oy = (float)llList2String(parts, 2);
-            float oz = (float)llList2String(parts, 3);
-            float cs = (float)llList2String(parts, 4);
-            // Root prim is tile (0,0) — move it to its correct grid position.
-            // All other tiles follow since they maintain fixed offsets from root.
-            vector target = <ox + cs * 0.5, oy + cs * 0.5, oz + 0.1>;
+            // BOARD_CONFIG|x|y|z  — pre-computed by controller (mirrors HANDLER_CONFIG)
+            if (llGetListLength(parts) < 4) return;
+            vector target = <(float)llList2String(parts, 1),
+                             (float)llList2String(parts, 2),
+                             (float)llList2String(parts, 3)>;
             llSetRegionPos(target);
             if (gHandle != 0) { llListenRemove(gHandle); gHandle = 0; }
             llSleep(0.5);   // allow position change to commit before self-destruct

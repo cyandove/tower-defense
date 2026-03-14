@@ -630,12 +630,15 @@ handleControllerMessage(key sender, string msg)
     {
         gBoard_Key = sender;
         dbg("[CTL] Board online: " + (string)gBoard_Key);
+        // Root tile (0,0) target position — mirrors HANDLER_CONFIG pattern.
+        vector target_board = <gGridOrigin.x + CELL_SIZE * 0.5,
+                               gGridOrigin.y + CELL_SIZE * 0.5,
+                               gGridOrigin.z + 0.1>;
         llRegionSayTo(gBoard_Key, CTRL,
             "BOARD_CONFIG"
-            + "|" + (string)gGridOrigin.x
-            + "|" + (string)gGridOrigin.y
-            + "|" + (string)gGridOrigin.z
-            + "|" + (string)CELL_SIZE);
+            + "|" + (string)target_board.x
+            + "|" + (string)target_board.y
+            + "|" + (string)target_board.z);
         return;
     }
 
