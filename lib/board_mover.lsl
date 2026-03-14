@@ -11,8 +11,8 @@
 // listener which is active in all tiles when start_param == 0.
 //
 // ACTIVATION GUARD:
-//   llGetNumberOfPrims() == 1 means a standalone tile — stays inert.
-//   Only activates when rezzed as part of a multi-prim linkset (the board).
+//   llGetRezzingObject() == NULL_KEY means rezzed from an avatar's inventory — stays inert.
+//   Only activates when rezzed by an in-world object (the controller).
 //
 // CHANNELS:
 //   CTRL = -2013   controller <-> board_mover
@@ -27,9 +27,9 @@ default
 
     on_rez(integer start_param)
     {
-        // Only activate when rezzed as part of a multi-prim linkset.
-        // Standalone rez (e.g., dragged from inventory manually) stays inert.
-        if (llGetNumberOfPrims() <= 1) return;
+        // Only activate when rezzed by an in-world object (the controller).
+        // Rezzed from an avatar's inventory: llGetRezzingObject() == NULL_KEY — stay inert.
+        if (llGetRezzingObject() == NULL_KEY) return;
         gHandle = llListen(CTRL, "", NULL_KEY, "");
         llSay(CTRL, "BOARD_READY");
     }
