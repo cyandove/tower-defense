@@ -52,6 +52,7 @@ default
             vector target = <ox + cs * 0.5, oy + cs * 0.5, oz + 0.1>;
             llSetRegionPos(target);
             if (gHandle != 0) { llListenRemove(gHandle); gHandle = 0; }
+            llSleep(0.5);   // allow position change to commit before self-destruct
             llRemoveInventory(llGetScriptName());   // board positioned — clean up self
         }
     }
