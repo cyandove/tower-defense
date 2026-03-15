@@ -222,11 +222,8 @@ default
         if (start_param == 0 || start_param == 99999)
         {
             // Board mode: rezzed as part of the linked MapBoard.
-            //   start_param == 0     — rezzed from avatar inventory (stay completely inert)
-            //   start_param == 99999 — rezzed by the controller (BOARD_PARAM sentinel);
-            //                         listen for SHUTDOWN so the controller can clean up.
-            if (start_param == 99999)
-                llListen(MAP_TILE, "", NULL_KEY, "SHUTDOWN");
+            // Completely inert — board_mover.lsl in the root prim owns both
+            // positioning (BOARD_READY/BOARD_CONFIG) and cleanup (SHUTDOWN/llDie).
             return;
         }
 
