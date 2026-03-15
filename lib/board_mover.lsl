@@ -2,20 +2,22 @@
 // board_mover.lsl
 // Tower Defense Board Auto-Positioner  -  Phase 8
 // =============================================================================
-// Lives in the root prim of the linked MapBoard.
-// On rez: announces BOARD_READY on CTRL, waits for BOARD_CONFIG from the
-// controller, calls llSetRegionPos to move the whole linkset, then swaps its
-// CTRL listener for a MAP_TILE SHUTDOWN listener and stays alive.
+// Lives in every MapTile prim (alongside map_tile.lsl), but only activates
+// in the root prim (link 1) when rezzed by the controller.
 //
-// Staying alive (rather than calling llRemoveInventory) avoids the "dead script"
-// problem: if llRemoveInventory fires and the board is later taken back to
-// inventory, the script is gone and subsequent rezzes have no handler.
-// It also means map_tile.lsl needs no active listeners in board mode — only
-// this one script handles both positioning and cleanup.
+// Including this script in MapTile from the start avoids the llGiveInventory
+// delivery problem: scripts delivered at link-time via llGiveInventory do not
+// reliably start running. By shipping board_mover in the tile prim itself,
+// it is always present and already running when the board is rezzed.
+//
+// On rez (start_param == BOARD_PARAM, link 1 only): announces BOARD_READY on
+// CTRL, waits for BOARD_CONFIG, calls llSetRegionPos to move the whole
+// linkset, then swaps its CTRL listener for a MAP_TILE SHUTDOWN listener.
+// All 99 non-root tile instances return immediately in on_rez.
 //
 // ACTIVATION GUARD:
-//   Avatar inventory rez always passes start_param == 0 — stays inert.
-//   Only activates when start_param == BOARD_PARAM (set by the controller).
+//   Avatar inventory rez passes start_param == 0 — all instances stay inert.
+//   Controller rez passes start_param == BOARD_PARAM — only link 1 activates.
 //
 // CHANNELS:
 //   CTRL     = -2013   controller <-> board_mover (positioning handshake)
@@ -33,9 +35,10 @@ default
 
     on_rez(integer start_param)
     {
-        // Only activate when rezzed by the controller (start_param == BOARD_PARAM).
-        // Avatar inventory rez always produces start_param == 0 — stay inert.
+        // Only the root prim (link 1) handles positioning and shutdown.
+        // Non-root instances of this script stay completely inert.
         if (start_param != BOARD_PARAM) return;
+        if (llGetLinkNumber() != 1) return;
         if (gHandle != 0) { llListenRemove(gHandle); gHandle = 0; }
         gHandle = llListen(CTRL, "", NULL_KEY, "");
         llSay(CTRL, "BOARD_READY");

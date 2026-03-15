@@ -21,7 +21,8 @@
 //   5. On LINK_TILES: requests PERMISSION_CHANGE_LINKS, then iterates
 //      gTileKeys calling llCreateLink (1.0s server delay per call = ~100s).
 //      Reports progress every 10 tiles. After all linked, breaks self from
-//      linkset and dies.
+//      linkset and dies. board_mover.lsl is already in every MapTile prim
+//      and needs no delivery step.
 //   6. On SHUTDOWN: broadcasts SHUTDOWN on MAP_TILE, then dies.
 //
 // CHANNELS:
@@ -317,14 +318,6 @@ state active
                 llOwnerSay("[BLD] Linked " + (string)(i + 1)
                     + "/" + (string)total + " tiles.");
         }
-
-        // Give board_mover to the LAST tile linked — it becomes root (link 1) after
-        // llBreakLink(1) removes the builder. Each llCreateLink(tile, TRUE) inserts
-        // the new tile at link 2, so the last tile linked ends up at link 2 and becomes
-        // link 1 (root) when the builder (link 1) detaches.
-        // Requires "board_mover" script to be in the builder prim's inventory.
-        if (llGetInventoryType("board_mover") != INVENTORY_NONE)
-            llGiveInventory(llList2Key(gTileKeys, total - 1), "board_mover");
 
         // Detach the builder itself from the linkset (link 1 = root = self after linking)
         llBreakLink(1);
