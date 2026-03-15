@@ -99,6 +99,9 @@ integer gSpawnCount      = 0;
 // Waypoint string received from controller: "x1:y1:z1;x2:y2:z2;..."
 string  gWaypointString  = "";
 
+// Health multiplier applied per-wave for multi-player scaling
+float   gHealthMult      = 1.0;
+
 // Entry cell grid coords  -  received from controller, used for registration
 integer gGridX           = 0;
 integer gGridY           = 0;
@@ -283,6 +286,11 @@ handleWaveStart(string msg)
 {
     list    parts = llParseString2List(msg, ["|"], []);
     integer count = (integer)llList2String(parts, 1);
+    if (llGetListLength(parts) >= 3)
+        gHealthMult = (float)llList2String(parts, 2);
+    else
+        gHealthMult = 1.0;
+
     if (count < 1) count = gEnemiesPerWave;
 
     if (!gConfigured)
@@ -313,7 +321,7 @@ handleEnemyReady(key sender)
 {
     string config = "ENEMY_CONFIG"
         + "|" + (string)gEnemySpeed
-        + "|" + (string)gEnemyHealth
+        + "|" + (string)(gEnemyHealth * gHealthMult)
         + "|" + gWaypointString;
     llRegionSayTo(sender, ENEMY_CHANNEL, config);
 }

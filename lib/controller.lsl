@@ -139,6 +139,7 @@ integer gLives        = 0;
 integer gScore        = 0;
 integer gWaveNum      = 0;
 integer gEnemiesOut   = 0;    // enemies currently alive this wave
+integer gPlayerCount  = 0;    // number of players who have placed towers this game
 integer gWaveClearTimer = 0;  // countdown ticks for WAVE_CLEAR delay
 integer gSetupPending = 0;    // objects rezzed but not yet registered
 integer gMenuChannel  = 0;    // derived from prim key in state_entry
@@ -556,11 +557,12 @@ onMapLoaded(integer mode)
 startSetup(string notecard)
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
-    gGridOrigin = llGetPos();
-    gLives      = STARTING_LIVES;
-    gScore      = 0;
-    gWaveNum    = 0;
-    gEnemiesOut = 0;
+    gGridOrigin  = llGetPos();
+    gLives       = STARTING_LIVES;
+    gScore       = 0;
+    gWaveNum     = 0;
+    gEnemiesOut  = 0;
+    gPlayerCount = 0;
 
     dbg("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
     startMapLoad(notecard, 1);
@@ -576,15 +578,21 @@ enterWaiting()
 startNextWave()
 {
     gWaveNum++;
-    integer count = WAVE_BASE + (gWaveNum - 1) * WAVE_INCREMENT;
+    integer scale       = gPlayerCount;
+    if (scale < 1) scale = 1;
+    integer count       = (WAVE_BASE + (gWaveNum - 1) * WAVE_INCREMENT) * scale;
+    float   health_mult = 1.0 + (float)(scale - 1) * 0.5;  // +50% HP per extra player
     gEnemiesOut = count;
     gLifecycle  = STATE_WAVE;
 
-    dbg("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count + " enemies.");
+    dbg("[CTL] Wave " + (string)gWaveNum + "  -  " + (string)count
+        + " enemies (scale=" + (string)scale
+        + " hp_mult=" + (string)health_mult + ").");
     notifyAnimations();
 
-    // Tell all registered spawners to start
-    llRegionSayTo(gSpawner_Key, CTRL, "WAVE_START|" + (string)count);
+    // Tell spawner to start; include health multiplier for multi-player scaling
+    llRegionSayTo(gSpawner_Key, CTRL,
+        "WAVE_START|" + (string)count + "|" + (string)health_mult);
 }
 
 onLifeLost()
@@ -656,12 +664,13 @@ resetGame()
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
     cleanupObjects();
-    gMap       = [];
-    gWaypoints = [];
-    gLives     = 0;
-    gScore     = 0;
-    gWaveNum   = 0;
-    gEnemiesOut = 0;
+    gMap         = [];
+    gWaypoints   = [];
+    gLives       = 0;
+    gScore       = 0;
+    gWaveNum     = 0;
+    gEnemiesOut  = 0;
+    gPlayerCount = 0;
     dbg("[CTL] Reset. Touch to set up a new game.");
 }
 
@@ -747,6 +756,14 @@ handleControllerMessage(key sender, string msg)
         key  obj_key  = (key)llList2String(parts, 1);
         integer obj_type = (integer)llList2String(parts, 2);
         onObjectRegistered(obj_key, obj_type);
+        return;
+    }
+
+    // Player count update from GM when a new player places their first tower
+    if (cmd == "PLAYER_COUNT")
+    {
+        gPlayerCount = (integer)llList2String(parts, 1);
+        dbg("[CTL] Player count: " + (string)gPlayerCount);
         return;
     }
 
