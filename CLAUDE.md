@@ -12,7 +12,7 @@ There are no install, build, lint, or test commands. All validation happens in-w
 
 ```
 lib/           — all LSL scripts (.lsl) and config notecards (.cfg)
-  config/      — notecard config files for tower and enemy types
+  config/      — notecard config files for tower/enemy types and maps (map_1.cfg, …)
 docs/          — design docs and per-phase notes (plain text / markdown)
 plan.md        — overall phased development plan
 ```
@@ -21,7 +21,7 @@ plan.md        — overall phased development plan
 
 The game runs as a multi-script system. Each script lives in its own prim.
 
-**Controller** (`controller.lsl`) — the only prim placed manually. Owns the map definition, cell state, grid geometry, game lifecycle (SETUP → WAITING → WAVE_ACTIVE → WAVE_CLEAR → GAME_OVER), lives, score, and wave progression. Rezzes the GM, placement handler, and spawner on touch. Derives waypoints from path cells via chain-follow and sends them to the spawner in a `SPAWNER_CONFIG` message.
+**Controller** (`controller.lsl`) — the only prim placed manually. Owns the map definition, cell state, grid geometry, game lifecycle (SETUP → WAITING → WAVE_ACTIVE → WAVE_CLEAR → GAME_OVER), lives, score, and wave progression. Rezzes the GM, placement handler, spawner, and MapBoard on touch. Reads the map from a `map_N.cfg` notecard asynchronously via `llGetNotecardLine`/`dataserver`; falls back to the built-in `loadMap_1()` if no notecard is found. Derives waypoints from path cells via chain-follow and sends them to the spawner in a `SPAWNER_CONFIG` message. When multiple `map_*.cfg` notecards are present, shows a map-selection dialog before setup.
 
 **Game Manager** (`game_manager.lsl`) — pure routing and registry. Tracks all registered objects (towers, enemies, spawner, handler) via heartbeat, maintains a live enemy position table, handles targeting requests from towers, and routes placement requests. Has no map state — queries the controller asynchronously for cell data (`CELL_QUERY` / `CELL_DATA`). Only one placement query can be in-flight at a time (`gPendingQuery`).
 
@@ -52,6 +52,7 @@ All channels are negative integers to avoid public chat collision.
 | -2011 | GRID_INFO |
 | -2012 | TOWER_PLACE |
 | -2013 | CONTROLLER (map queries, lifecycle, setup config) |
+| -2014 | MAP_TILE (map builder ↔ tiles; board_mover SHUTDOWN) |
 
 ## Prim Inventory Setup
 
@@ -59,15 +60,19 @@ Each prim needs specific scripts and notecards in its inventory:
 
 | Prim | Scripts | Notecards |
 |------|---------|-----------|
-| **Controller** | `controller.lsl`, `controller-animations.lsl` (optional) | — |
+| **Controller** | `controller.lsl`, `controller-animations.lsl` (optional) | `map_1.cfg` (and any other `map_*.cfg`) |
 | **GameManager** | `game_manager.lsl` | `tower_types.cfg` |
 | **PlacementHandler** | `placement_handler.lsl` | — |
 | **Spawner** | `spawner.lsl` | `spawner.cfg` |
 | **TowerBasic** | `tower.lsl`, `tower-animations.lsl` (optional) | `tower_types.cfg`, `tower_basic.cfg` |
 | **TowerSniper** | `tower.lsl`, `tower-animations.lsl` (optional) | `tower_types.cfg`, `tower_sniper.cfg` |
 | **Enemy** | `enemy.lsl`, `enemy-animations.lsl` (optional) | — |
+| **MapTile** | `map_tile.lsl`, `board_mover.lsl` | — |
+| **MapBuilder** | `map_builder.lsl` | — |
 
-The controller prim also holds the **GameManager**, **PlacementHandler**, **Spawner**, and all tower/enemy prim objects in its inventory — it rezzes them at setup time. Each tower prim needs all tower stats notecards listed in `tower_types.cfg` (or at minimum the one for its own type), since the tower reads `tower_types.cfg` to discover which stats notecard to load.
+The controller prim also holds the **GameManager**, **PlacementHandler**, **Spawner**, **MapBuilder**, **MapBoard**, and all tower/enemy prim objects in its inventory — it rezzes them at setup time. Each tower prim needs all tower stats notecards listed in `tower_types.cfg` (or at minimum the one for its own type), since the tower reads `tower_types.cfg` to discover which stats notecard to load.
+
+`board_mover.lsl` lives in every **MapTile** prim (not delivered at link time). When the MapBoard linkset is rezzed by the controller, `board_mover` in the root prim (link 1) handles positioning and SHUTDOWN; all other instances see `llGetLinkNumber() != 1` and stay inert. Do not use `llGiveInventory` to deliver `board_mover` — scripts delivered this way do not reliably start running.
 
 ## Config Notecards
 
@@ -86,7 +91,11 @@ Enemy parameters: `health`, `speed`, `evasion`, `armor`, `shield`. Tower paramet
 
 ## Map Format
 
-Maps are defined in `controller.lsl` as `loadMap_N()` functions. Each map is a 300-entry strided list (10×10 grid, stride 3: `[type, occupied, 0]`). Cell types: `0`=blocked, `1`=buildable, `2`=path. To add a map: write a new `loadMap_N()` and add a branch in `loadMap()`.
+Maps live in `lib/config/map_N.cfg` notecards dropped into the controller prim's inventory. The controller reads the active map asynchronously at startup via `llGetNotecardLine`/`dataserver`. Fields: `map_w`, `map_h`, `cell_size`, `entry_x`, `board_name`, and `row_0`…`row_N` (compact strings of `X`/`B`/`P` characters). `map_w`/`map_h`/`cell_size` must appear before any `row_N` line. If no notecard is found the controller falls back to the built-in `loadMap_1()` (same S-bend layout as `map_1.cfg`).
+
+When multiple `map_*.cfg` notecards are present, the startup menu shows a map-selection dialog. The naming convention `map_*.cfg` is significant — `findMapNotecards()` scans for that pattern.
+
+The internal representation is a 300-entry strided list (`gMap`, stride 3: `[type, occupied, 0]`). Cell types: `0`=blocked, `1`=buildable, `2`=path.
 
 ## In-World Debug Commands (owner chat)
 
