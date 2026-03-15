@@ -44,8 +44,8 @@
 // MAP DEFINITIONS:
 //   Maps are defined as functions returning pre-encoded row lists.
 //   To add a map: add a new loadMap_N() function and a branch in loadMap().
-//   Each row is 10 cells x stride-3 = 30 integers: [type, occupied, 0, ...]
-//   Cell types: 0=blocked  1=buildable  2=path
+//   Each row is 10 cells x stride-1 = 10 integers: [type*10+occupied, ...]
+//   Cell types: 0=blocked  1=buildable  2=path   occupied digit: 0=free 1=tower 2=reserved
 //   Entry cell: the path cell on y=0 (top row)  -  seed for waypoint derivation.
 // =============================================================================
 
@@ -133,7 +133,7 @@ integer STATE_GAME_OVER  = 5;
 // -----------------------------------------------------------------------------
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
-list    gMap          = [];   // [type, occupied, 0, ...]  stride=3, 300 entries
+list    gMap          = [];   // [type*10+occupied, ...]  stride=1, 100 entries
 list    gWaypoints    = [];   // world-space vectors derived from path cells
 vector  gGridOrigin   = ZERO_VECTOR;
 key     gGM_Key       = NULL_KEY;
@@ -175,9 +175,9 @@ dbg(string msg)
 // =============================================================================
 // MAP DEFINITIONS
 // =============================================================================
-// Each loadMap_N() appends the full 300-entry map to gMap as 10 row literals.
+// Each loadMap_N() appends the full 100-entry map to gMap as 10 row literals.
 // No setCell() calls  -  pre-encoded to avoid any llListReplaceList at init time.
-// Returns the entry cell x coordinate (entry is always on y=0 for this map set).
+// Encoding: blocked=0  buildable=10  path=20  (type*10, occupied digit starts at 0)
 
 loadMap_1()
 {
@@ -193,28 +193,28 @@ loadMap_1()
     // y8: B B P B B B B B B B
     // y9: B B P B B B B B X X
     gMap = [];
-    gMap += [0,0,0, 0,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 2,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0];
-    gMap += [1,0,0, 1,0,0, 2,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 0,0,0, 0,0,0];
+    gMap += [ 0, 0,20,10,10,10,10,10,10,10];  // y0
+    gMap += [10,10,20,10,10,10,10,10,10,10];  // y1
+    gMap += [10,10,20,10,10,10,10,10,10,10];  // y2
+    gMap += [10,10,20,10,10,10,10,10,10,10];  // y3
+    gMap += [10,10,20,20,20,20,20,20,10,10];  // y4
+    gMap += [10,10,10,10,10,10,10,20,10,10];  // y5
+    gMap += [10,10,10,10,10,10,10,20,10,10];  // y6
+    gMap += [10,10,20,20,20,20,20,20,10,10];  // y7
+    gMap += [10,10,20,10,10,10,10,10,10,10];  // y8
+    gMap += [10,10,20,10,10,10,10,10, 0, 0];  // y9
     gMapEntryX = 2;
 }
 
 // Stub for a second map  -  add row data here when ready.
-// loadMap_2() { gMapEntryX = ...; gMap = []; gMap += [...]; }
+// loadMap_2() { gMapEntryX = ...; gMap = []; gMap += [type*10, ...]; }
 
 
 // =============================================================================
 // MAP HELPERS
 // =============================================================================
 
-integer cellIdx(integer x, integer y) { return (y * MAP_W + x) * 3; }
+integer cellIdx(integer x, integer y) { return y * MAP_W + x; }
 
 integer inBounds(integer x, integer y)
 {
@@ -224,20 +224,21 @@ integer inBounds(integer x, integer y)
 integer cellType(integer x, integer y)
 {
     if (!inBounds(x, y)) return 0;
-    return llList2Integer(gMap, cellIdx(x, y));
+    return llList2Integer(gMap, cellIdx(x, y)) / 10;
 }
 
 integer cellOccupied(integer x, integer y)
 {
     if (!inBounds(x, y)) return 1;
-    return llList2Integer(gMap, cellIdx(x, y) + 1);
+    return llList2Integer(gMap, cellIdx(x, y)) % 10;
 }
 
 setCellOccupied(integer x, integer y, integer flag)
 {
     if (!inBounds(x, y)) return;
-    integer i = cellIdx(x, y) + 1;
-    gMap = llListReplaceList(gMap, [flag], i, i);
+    integer i    = cellIdx(x, y);
+    integer type = llList2Integer(gMap, i) / 10;
+    gMap = llListReplaceList(gMap, [type * 10 + flag], i, i);
 }
 
 // Cell types used as string tokens in CELL_DATA responses
@@ -499,7 +500,7 @@ notifyAnimations()
 // MAP BUILDER SUPPORT
 // =============================================================================
 
-// Extract cell types (stride-3 index 0) from gMap into a CSV string.
+// Extract cell types from gMap into a CSV string.
 // Result: "0,1,2,1,1,..." (100 values for a 10x10 grid)
 string buildCellTypeString()
 {
@@ -509,7 +510,7 @@ string buildCellTypeString()
     for (i = 0; i < total; i++)
     {
         if (result != "") result += ",";
-        result += (string)llList2Integer(gMap, i * 3);
+        result += (string)(llList2Integer(gMap, i) / 10);
     }
     return result;
 }
@@ -1202,7 +1203,7 @@ default
                     if      (ch == "P") ct = 2;
                     else if (ch == "B") ct = 1;
                     else                ct = 0;
-                    gMap += [ct, 0, 0];
+                    gMap += [ct * 10];
                 }
             }
         }

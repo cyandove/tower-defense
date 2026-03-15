@@ -95,7 +95,7 @@ Maps live in `lib/config/map_N.cfg` notecards dropped into the controller prim's
 
 When multiple `map_*.cfg` notecards are present, the startup menu shows a map-selection dialog. The naming convention `map_*.cfg` is significant — `findMapNotecards()` scans for that pattern.
 
-The internal representation is a 300-entry strided list (`gMap`, stride 3: `[type, occupied, 0]`). Cell types: `0`=blocked, `1`=buildable, `2`=path.
+The internal representation is a 100-entry flat list (`gMap`): each cell is a single integer `type * 10 + occupied`. Decode with `/ 10` (type) and `% 10` (occupied). Cell types: `0`=blocked, `1`=buildable, `2`=path. Occupied values: `0`=free, `1`=has tower, `2`=reserved.
 
 ## In-World Debug Commands (owner chat)
 
