@@ -58,13 +58,6 @@ integer DBG_CHANNEL = -2099;   // owner-only debug toggle broadcast
 
 
 // -----------------------------------------------------------------------------
-// CURRENCY
-// -----------------------------------------------------------------------------
-integer STARTING_BALANCE = 100;
-integer KILL_REWARD      = 25;
-
-
-// -----------------------------------------------------------------------------
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
 list    gRegistry        = [];   // [key, type, gx, gy, timestamp]  stride=5
@@ -86,11 +79,6 @@ integer gTypesLoaded      = FALSE;
 integer gGmConfigOk       = FALSE;
 key     gTypesQuery       = NULL_KEY;
 integer gTypesLine        = 0;
-
-// Player currency — parallel lists indexed together
-list    gPlayerKeys    = [];   // (string)avatar_key per unique player who has placed a tower
-list    gPlayerBalance = [];   // parallel integer balances
-
 
 // =============================================================================
 // DEBUG HELPER
@@ -177,42 +165,6 @@ sendTowerLabels()
         labels += "|" + llList2String(gTowerTypes, i * 5 + 2);
     llRegionSayTo(handler, -2008, labels);
     dbg("[GM] Sent tower labels to handler");
-}
-
-
-// =============================================================================
-// PLAYER CURRENCY HELPERS
-// =============================================================================
-
-integer playerIndex(key avatar)
-{
-    return llListFindList(gPlayerKeys, [(string)avatar]);
-}
-
-ensurePlayer(key avatar)
-{
-    if (playerIndex(avatar) != -1) return;
-    gPlayerKeys    += [(string)avatar];
-    gPlayerBalance += [STARTING_BALANCE];
-    integer n = llGetListLength(gPlayerKeys);
-    llRegionSayTo(avatar, 0,
-        "[TD] Welcome! Starting balance: " + (string)STARTING_BALANCE + " credits.");
-    if (gCtrl_Key != NULL_KEY)
-        llRegionSayTo(gCtrl_Key, -2013, "PLAYER_COUNT|" + (string)n);
-}
-
-integer getBalance(key avatar)
-{
-    integer i = playerIndex(avatar);
-    if (i == -1) return 0;
-    return llList2Integer(gPlayerBalance, i);
-}
-
-setBalance(key avatar, integer amount)
-{
-    integer i = playerIndex(avatar);
-    if (i == -1) return;
-    gPlayerBalance = llListReplaceList(gPlayerBalance, [amount], i, i);
 }
 
 
@@ -526,16 +478,6 @@ handleEnemyReport(key sender, string msg)
     {
         removeEnemyPosition(sender);
         deregisterObject(sender);
-        integer n = llGetListLength(gPlayerKeys);
-        integer i;
-        for (i = 0; i < n; i++)
-        {
-            key av  = (key)llList2String(gPlayerKeys, i);
-            integer bal = llList2Integer(gPlayerBalance, i) + KILL_REWARD;
-            gPlayerBalance = llListReplaceList(gPlayerBalance, [bal], i, i);
-            llRegionSayTo(av, 0,
-                "[TD] +" + (string)KILL_REWARD + " credits! Balance: " + (string)bal);
-        }
         if (gCtrl_Key != NULL_KEY)
             llRegionSayTo(gCtrl_Key, -2013, "ENEMY_KILLED");
     }
@@ -769,28 +711,11 @@ handleTowerPlaceRequest(key sender, string msg)
     if (towerObjName(type_id) == "")
     { llOwnerSay("[PL] Unknown tower type: " + (string)type_id); return; }
 
-    ensurePlayer(avatar);
-    integer cost    = towerCost(type_id);
-    integer balance = getBalance(avatar);
-    if (balance < cost)
-    {
-        // Unreserve the cell so another player can use it
-        llRegionSayTo(gCtrl_Key, -2013,
-            "CELL_SET|" + (string)gx + "|" + (string)gy + "|0");
-        llRegionSayTo(avatar, 0,
-            "[TD] Not enough credits — need " + (string)cost
-            + ", have " + (string)balance + ".");
-        return;
-    }
-    setBalance(avatar, balance - cost);
-    llRegionSayTo(avatar, 0,
-        "[TD] Tower placed! -" + (string)cost
-        + " credits. Balance: " + (string)(balance - cost));
-
-    // Mark occupied in controller and rez
+    // Forward to controller for credit check, cell occupation, and rez authorisation
     llRegionSayTo(gCtrl_Key, -2013,
-        "CELL_SET|" + (string)gx + "|" + (string)gy + "|1");
-    rezTower(gx, gy, type_id);
+        "TOWER_PLACE_REQUEST|" + (string)gx + "|" + (string)gy
+        + "|" + (string)avatar + "|" + (string)type_id
+        + "|" + (string)towerCost(type_id));
 }
 
 
@@ -930,6 +855,13 @@ handleControllerMessage(key sender, string msg)
     {
         handleCellData(msg);
     }
+    else if (cmd == "TOWER_PLACE_OK")
+    {
+        if (llGetListLength(parts) < 4) return;
+        rezTower((integer)llList2String(parts, 1),
+                 (integer)llList2String(parts, 2),
+                 (integer)llList2String(parts, 3));
+    }
     else if (cmd == "SHUTDOWN")
     {
         dbg("[GM] Shutdown received. Notifying towers then dying.");
@@ -942,8 +874,6 @@ handleControllerMessage(key sender, string msg)
             if (llList2Integer(gRegistry, idx + 1) == 1)
                 llRegionSayTo((key)llList2String(gRegistry, idx), -2001, "SHUTDOWN");
         }
-        gPlayerKeys    = [];
-        gPlayerBalance = [];
         llDie();
     }
 }

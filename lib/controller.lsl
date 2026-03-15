@@ -91,6 +91,13 @@ integer WAVE_CLEAR_DELAY = 5;   // seconds between wave clear and next wave star
 
 
 // -----------------------------------------------------------------------------
+// CURRENCY
+// -----------------------------------------------------------------------------
+integer STARTING_BALANCE = 100;
+integer KILL_REWARD      = 25;
+
+
+// -----------------------------------------------------------------------------
 // GAME SETTINGS
 // -----------------------------------------------------------------------------
 integer STARTING_LIVES      = 20;
@@ -140,6 +147,8 @@ integer gScore        = 0;
 integer gWaveNum      = 0;
 integer gEnemiesOut   = 0;    // enemies currently alive this wave
 integer gPlayerCount  = 0;    // number of players who have placed towers this game
+list    gPlayerKeys    = [];  // (string)avatar_key per unique player
+list    gPlayerBalance = [];  // parallel integer balances
 integer gWaveClearTimer = 0;  // countdown ticks for WAVE_CLEAR delay
 integer gSetupPending = 0;    // objects rezzed but not yet registered
 integer gMenuChannel  = 0;    // derived from prim key in state_entry
@@ -436,6 +445,40 @@ sendConfigs()
 
 
 // =============================================================================
+// PLAYER CURRENCY
+// =============================================================================
+
+integer playerIndex(key avatar)
+{
+    return llListFindList(gPlayerKeys, [(string)avatar]);
+}
+
+ensurePlayer(key avatar)
+{
+    if (playerIndex(avatar) != -1) return;
+    gPlayerKeys    += [(string)avatar];
+    gPlayerBalance += [STARTING_BALANCE];
+    gPlayerCount    = llGetListLength(gPlayerKeys);
+    llRegionSayTo(avatar, 0,
+        "[TD] Welcome! Starting balance: " + (string)STARTING_BALANCE + " credits.");
+}
+
+integer getBalance(key avatar)
+{
+    integer i = playerIndex(avatar);
+    if (i == -1) return 0;
+    return llList2Integer(gPlayerBalance, i);
+}
+
+setBalance(key avatar, integer amount)
+{
+    integer i = playerIndex(avatar);
+    if (i == -1) return;
+    gPlayerBalance = llListReplaceList(gPlayerBalance, [amount], i, i);
+}
+
+
+// =============================================================================
 // ANIMATION NOTIFICATION
 // =============================================================================
 
@@ -557,12 +600,14 @@ onMapLoaded(integer mode)
 startSetup(string notecard)
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
-    gGridOrigin  = llGetPos();
-    gLives       = STARTING_LIVES;
-    gScore       = 0;
-    gWaveNum     = 0;
-    gEnemiesOut  = 0;
-    gPlayerCount = 0;
+    gGridOrigin    = llGetPos();
+    gLives         = STARTING_LIVES;
+    gScore         = 0;
+    gWaveNum       = 0;
+    gEnemiesOut    = 0;
+    gPlayerCount   = 0;
+    gPlayerKeys    = [];
+    gPlayerBalance = [];
 
     dbg("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
     startMapLoad(notecard, 1);
@@ -615,6 +660,16 @@ onEnemyKilled()
 {
     gScore++;
     gEnemiesOut--;
+    integer n = llGetListLength(gPlayerKeys);
+    integer i;
+    for (i = 0; i < n; i++)
+    {
+        key av  = (key)llList2String(gPlayerKeys, i);
+        integer bal = llList2Integer(gPlayerBalance, i) + KILL_REWARD;
+        gPlayerBalance = llListReplaceList(gPlayerBalance, [bal], i, i);
+        llRegionSayTo(av, 0,
+            "[TD] +" + (string)KILL_REWARD + " credits! Balance: " + (string)bal);
+    }
     dbg("[CTL] Enemy killed. Score: " + (string)gScore
         + "  Enemies remaining: " + (string)gEnemiesOut);
     notifyAnimations();
@@ -664,13 +719,15 @@ resetGame()
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
     cleanupObjects();
-    gMap         = [];
-    gWaypoints   = [];
-    gLives       = 0;
-    gScore       = 0;
-    gWaveNum     = 0;
-    gEnemiesOut  = 0;
-    gPlayerCount = 0;
+    gMap           = [];
+    gWaypoints     = [];
+    gLives         = 0;
+    gScore         = 0;
+    gWaveNum       = 0;
+    gEnemiesOut    = 0;
+    gPlayerCount   = 0;
+    gPlayerKeys    = [];
+    gPlayerBalance = [];
     dbg("[CTL] Reset. Touch to set up a new game.");
 }
 
@@ -759,11 +816,35 @@ handleControllerMessage(key sender, string msg)
         return;
     }
 
-    // Player count update from GM when a new player places their first tower
-    if (cmd == "PLAYER_COUNT")
+    // Tower placement request forwarded from GM: credit check, cell marking, rez auth
+    if (cmd == "TOWER_PLACE_REQUEST")
     {
-        gPlayerCount = (integer)llList2String(parts, 1);
-        dbg("[CTL] Player count: " + (string)gPlayerCount);
+        if (llGetListLength(parts) < 6) return;
+        integer gx      = (integer)llList2String(parts, 1);
+        integer gy      = (integer)llList2String(parts, 2);
+        key     avatar  = (key)llList2String(parts, 3);
+        integer type_id = (integer)llList2String(parts, 4);
+        integer cost    = (integer)llList2String(parts, 5);
+
+        ensurePlayer(avatar);
+        integer balance = getBalance(avatar);
+        if (balance < cost)
+        {
+            setCellOccupied(gx, gy, 0);   // unreserve
+            llRegionSayTo(avatar, 0,
+                "[TD] Not enough credits — need " + (string)cost
+                + ", have " + (string)balance + ".");
+            return;
+        }
+        setBalance(avatar, balance - cost);
+        setCellOccupied(gx, gy, 1);
+        llRegionSayTo(avatar, 0,
+            "[TD] Tower placed! -" + (string)cost
+            + " credits. Balance: " + (string)(balance - cost));
+        if (gGM_Key != NULL_KEY)
+            llRegionSayTo(gGM_Key, CTRL,
+                "TOWER_PLACE_OK|" + (string)gx + "|" + (string)gy
+                + "|" + (string)type_id);
         return;
     }
 
