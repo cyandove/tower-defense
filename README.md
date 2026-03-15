@@ -18,7 +18,7 @@ The game runs as a set of cooperating scripts, each living in its own prim. Only
 | `enemy.lsl` | Enemy | Waypoint movement, damage handling |
 | `map_tile.lsl` | MapTile (board) | Visual map board tile; interactive cell editor when built |
 | `map_builder.lsl` | MapBuilder | In-world map design tool; rezzes and links tiles |
-| `board_mover.lsl` | MapBoard root tile | Auto-positions the linked board on rez, then removes itself |
+| `board_mover.lsl` | Every MapTile prim | Auto-positions the board on rez (root prim only); handles SHUTDOWN |
 
 ---
 
@@ -62,15 +62,16 @@ Controller prim  (placed manually in-world)
     │       └── enemy-animations.lsl   (optional)
     ├── MapBuilder                     (optional — map design tool)
     │   ├── map_builder.lsl
-    │   ├── board_mover                (compiled script — auto-delivered to board root at link time)
     │   └── MapTile                    (rezzed during map building, 100 total)
-    │       └── map_tile.lsl
+    │       ├── map_tile.lsl
+    │       └── board_mover.lsl        (inert during building; activates in root prim on game rez)
     └── MapBoard                       (optional — linked 100-prim board)
-        ├── [root tile (0,0)]
-        │   ├── board_mover.lsl        (positions board on rez, then removes itself)
-        │   └── map_tile.lsl
-        └── [tiles 1–99]
-            └── map_tile.lsl
+        ├── [root tile — link 1]
+        │   ├── board_mover.lsl        (active: positions board on rez, handles SHUTDOWN)
+        │   └── map_tile.lsl           (inert in board mode)
+        └── [tiles 2–100]
+            ├── board_mover.lsl        (inert — link number != 1)
+            └── map_tile.lsl           (inert in board mode)
 ```
 
 ---
@@ -83,7 +84,7 @@ Build each prim once, populate its inventory as shown in the hierarchy above, an
 
 - **Tower** — must contain `tower_types.cfg` plus a stats notecard for every tower type it may be used as (the script reads `tower_types.cfg` first to find which stats notecard to load).
 - **GameManager** — must contain a `Tower` object (or one object per distinct tower type name if you use different prim shapes per type).
-- **MapBuilder** — must contain the compiled `board_mover` script; the builder delivers it automatically to the root tile when linking.
+- **MapBuilder** — no longer needs a `board_mover` script; `board_mover` is included directly in the **MapTile** prim instead.
 - **MapBoard** — built by the Map Builder tool; see the [Map Builder](#map-builder) section.
 
 ### Place and start
@@ -292,9 +293,9 @@ Off-grid neighbor buttons show `---`.
 
 After texturing, touch the controller and select **Link Tiles**. The builder links all 100 tiles into a single linkset — this takes ~100 seconds (one `llCreateLink` call per tile with a mandatory 1s delay each). Progress is reported every 10 tiles.
 
-Before breaking away from the linkset, the builder automatically delivers the compiled `board_mover` script into the root tile (tile `(0,0)`). When complete the builder announces `Board linked! Take it into controller inventory.` and removes itself. Take the 100-prim linkset into the **controller prim's inventory** and name it **`MapBoard`** (or whatever `board_name` you set in your map notecard).
+When complete the builder announces `Board linked! Take it into controller inventory.` and removes itself. Take the 100-prim linkset into the **controller prim's inventory** and name it **`MapBoard`** (or whatever `board_name` you set in your map notecard).
 
-The next time the controller starts a game, it rezzes the `MapBoard` automatically. The `board_mover` script activates, announces itself to the controller, receives the grid origin and cell size, calls `llSetRegionPos` to snap the board into position, then removes itself — leaving the board in place with no persistent scripts beyond `map_tile.lsl`'s lightweight SHUTDOWN listener.
+The next time the controller starts a game, it rezzes the `MapBoard` automatically. The `board_mover` script in the root prim (link 1) activates, announces itself to the controller, receives the target position, calls `llSetRegionPos` to snap the board into position, then listens for `SHUTDOWN`. All other tiles' `board_mover` instances see they are not link 1 and stay inert; `map_tile.lsl` is also fully inert in board mode. Only one script in the entire board is active at runtime.
 
 On game over or reset the controller sends `SHUTDOWN` to the board and it removes itself from the region.
 
@@ -306,8 +307,8 @@ To discard without linking, select **Clean Up Map** — all tiles and the builde
 
 The `MapBuilder` and `MapTile` objects must be created once and stored in the appropriate inventories:
 
-1. Create a flat box prim (z-scale `0.05`), name it **`MapTile`**, add `map_tile.lsl` inside, then take it into inventory.
-2. Create a prim, name it **`MapBuilder`**, add `map_builder.lsl`, the compiled `board_mover` script, and the `MapTile` object inside, then take it into inventory.
+1. Create a flat box prim (z-scale `0.05`), name it **`MapTile`**, add `map_tile.lsl` **and `board_mover.lsl`** inside, then take it into inventory.
+2. Create a prim, name it **`MapBuilder`**, add `map_builder.lsl` and the `MapTile` object inside, then take it into inventory.
 3. Place the `MapBuilder` object in the **controller prim's inventory** alongside `GameManager`, `PlacementHandler`, and `Spawner`.
 4. After building a board (see above), place the resulting **`MapBoard`** linkset in the controller prim's inventory. The board auto-positions itself each time the game is set up.
 
