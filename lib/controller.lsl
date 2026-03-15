@@ -149,6 +149,7 @@ integer gMapEntryX    = 2;          // entry cell x (from notecard or fallback)
 integer gMapLoadMode  = 0;          // 1=game setup  2=map builder
 string  gMapNotecard  = "map_1.cfg";
 string  gMapBoardName = "MapBoard"; // overridden by board_name= notecard field
+integer gMapSelectMode = 0;         // pending map selection: 1=game setup  2=builder
 
 
 // =============================================================================
@@ -469,14 +470,30 @@ string buildCellTypeString()
     return result;
 }
 
-startMapBuilder()
+// Returns a list of all map_*.cfg notecard names in this prim's inventory.
+list findMapNotecards()
+{
+    list maps = [];
+    integer n = llGetInventoryNumber(INVENTORY_NOTECARD);
+    integer i;
+    for (i = 0; i < n; i++)
+    {
+        string name = llGetInventoryName(INVENTORY_NOTECARD, i);
+        if (llGetSubString(name, 0, 3) == "map_"
+            && llGetSubString(name, -4, -1) == ".cfg")
+            maps += [name];
+    }
+    return maps;
+}
+
+startMapBuilder(string notecard)
 {
     if (llGetInventoryType(INV_BUILDER) == INVENTORY_NONE)
     {
         llOwnerSay("[CTL] Missing inventory: " + INV_BUILDER);
         return;
     }
-    startMapLoad("map_1.cfg", 2);
+    startMapLoad(notecard, 2);
 }
 
 cleanupBuilder()
@@ -536,7 +553,7 @@ onMapLoaded(integer mode)
 }
 
 
-startSetup()
+startSetup(string notecard)
 {
     if (gBuilder_Key != NULL_KEY) cleanupBuilder();
     gGridOrigin = llGetPos();
@@ -546,7 +563,7 @@ startSetup()
     gEnemiesOut = 0;
 
     dbg("[CTL] Setup started. Grid origin: " + (string)gGridOrigin);
-    startMapLoad("map_1.cfg", 1);
+    startMapLoad(notecard, 1);
 }
 
 enterWaiting()
@@ -858,6 +875,37 @@ handleDebug(string msg)
 // Stale listeners are culled by the 1-second timer.
 // =============================================================================
 
+// If only one map notecard exists, start immediately.
+// If multiple exist, show a dialog so the player can pick one.
+// Falls back to "map_1.cfg" (which itself falls back to the built-in map) when
+// no map notecards are found.
+promptMapSelect(key avatar, integer mode)
+{
+    list maps  = findMapNotecards();
+    integer n  = llGetListLength(maps);
+
+    if (n <= 1)
+    {
+        string nc = llList2String(maps, 0);   // "" if n==0 → fallback triggers in startMapLoad
+        if (n == 0) nc = "map_1.cfg";
+        if (mode == 1) startSetup(nc);
+        else         { gGridOrigin = llGetPos(); startMapBuilder(nc); }
+        return;
+    }
+
+    // Build button list — strip ".cfg" for display; cap at 12 (llDialog limit)
+    gMapSelectMode = mode;
+    list buttons = [];
+    integer i;
+    for (i = 0; i < n && i < 12; i++)
+        buttons += [llGetSubString(llList2String(maps, i), 0, -5)];
+
+    integer handle = llListen(gMenuChannel, "", avatar, "");
+    gMenuDialogs += [handle, (string)avatar, llGetUnixTime() + MENU_DIALOG_TIMEOUT];
+    llDialog(avatar, "Select a map:", buttons, gMenuChannel);
+}
+
+
 showMenu(key avatar)
 {
     string prompt;
@@ -915,15 +963,27 @@ handleMenuResponse(key avatar, string choice)
     if (choice == "Start Game")
     {
         if (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
-            startSetup();
+            promptMapSelect(avatar, 1);
     }
     else if (choice == "Build Map")
     {
         if ((gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
             && gBuilder_Key == NULL_KEY)
+            promptMapSelect(avatar, 2);
+    }
+    // Map selection response: button text is notecard name minus ".cfg"
+    else if (gMapSelectMode != 0
+             && (gLifecycle == STATE_IDLE || gLifecycle == STATE_GAME_OVER)
+             && llGetInventoryType(choice + ".cfg") != INVENTORY_NONE)
+    {
+        integer mode   = gMapSelectMode;
+        gMapSelectMode = 0;
+        if (mode == 1)
+            startSetup(choice + ".cfg");
+        else
         {
             gGridOrigin = llGetPos();
-            startMapBuilder();
+            startMapBuilder(choice + ".cfg");
         }
     }
     else if (choice == "Link Tiles")
