@@ -21,7 +21,7 @@ plan.md        — overall phased development plan
 
 The game runs as a multi-script system. Each script lives in its own prim.
 
-**Controller** (`controller.lsl`) — the only prim placed manually. Owns the map definition, cell state, grid geometry, game lifecycle (SETUP → WAITING → WAVE_ACTIVE → WAVE_CLEAR → GAME_OVER), lives, score, and wave progression. Rezzes the GM, placement handler, spawner, and MapBoard on touch. Reads the map from a `map_N.cfg` notecard asynchronously via `llGetNotecardLine`/`dataserver`; falls back to the built-in `loadMap_1()` if no notecard is found. Derives waypoints from path cells via chain-follow and sends them to the spawner in a `SPAWNER_CONFIG` message. When multiple `map_*.cfg` notecards are present, shows a map-selection dialog before setup.
+**Controller** (`controller.lsl`) — the only prim placed manually. Owns the map definition, cell state, grid geometry, game lifecycle (SETUP → WAITING → WAVE_ACTIVE → WAVE_CLEAR → GAME_OVER), lives, score, wave progression, and player currency balances. Rezzes the GM, placement handler, spawner, and MapBoard on touch. Reads the map from a `map_N.cfg` notecard asynchronously via `llGetNotecardLine`/`dataserver`; falls back to the built-in `loadMap_1()` if no notecard is found. Derives waypoints from path cells via chain-follow and sends them to the spawner in a `SPAWNER_CONFIG` message. When multiple `map_*.cfg` notecards are present, shows a map-selection dialog before setup.
 
 **Game Manager** (`game_manager.lsl`) — pure routing and registry. Tracks all registered objects (towers, enemies, spawner, handler) via heartbeat, maintains a live enemy position table, handles targeting requests from towers, and routes placement requests. Has no map state — queries the controller asynchronously for cell data (`CELL_QUERY` / `CELL_DATA`). Only one placement query can be in-flight at a time (`gPendingQuery`).
 
@@ -78,7 +78,7 @@ The controller prim also holds the **GameManager**, **PlacementHandler**, **Spaw
 
 Tower and enemy parameters live in `lib/config/*.cfg` — key=value format, `#` for comments.
 
-**`tower_types.cfg`** is the central tower type registry, shared across the GM, tower, and placement handler. Format is pipe-delimited: `type_id|object_name|label|notecard`. Adding a new tower type requires only: a new stats `.cfg` file and a new line in `tower_types.cfg`. The GM reads it to look up object names and labels; the tower reads it to find its stats notecard; the GM sends labels to the placement handler at runtime.
+**`tower_types.cfg`** is the central tower type registry, shared across the GM, tower, and placement handler. Format is pipe-delimited: `type_id|object_name|label|notecard|cost`. Adding a new tower type requires only: a new stats `.cfg` file and a new line in `tower_types.cfg`. The GM reads it to look up object names, labels, and costs; the tower reads it to find its stats notecard; the GM sends labels to the placement handler at runtime.
 
 ## Combat Model
 
@@ -108,7 +108,7 @@ The internal representation is a 300-entry strided list (`gMap`, stride 3: `[typ
 
 ## Key LSL Constraints to Keep in Mind
 
-- Each script has a **64 KB heap**. The GM and controller are the most memory-pressured scripts. Check `llGetFreeMemory()` after changes.
+- Each script has a **64 KB heap**. The GM and controller are the most memory-pressured scripts. Check `llGetFreeMemory()` after changes. **The GM is near its limit** — adding state, lists, or significant logic to `game_manager.lsl` risks a stack-heap collision. Prefer adding new game-state responsibilities to the controller instead.
 - `llListReplaceList` on large lists allocates a new list — minimize calls during wave-active state.
 - `llRegionSayTo` (targeted) is strongly preferred over `llSay`/`llRegionSay` (broadcast) to avoid waking unintended listeners.
 - Enemy position reports (~0.5 s interval per enemy) are the dominant message volume source; this scales with wave count.
