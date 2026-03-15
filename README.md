@@ -90,7 +90,7 @@ Build each prim once, populate its inventory as shown in the hierarchy above, an
 
 1. Place **only the controller prim** at the **south-west corner** of your intended grid area. Its position becomes the `(0,0)` grid origin.
 2. Drop your map notecard (e.g. `map_1.cfg`) into the controller prim's inventory. Grid dimensions and cell size are read from the notecard — no script editing needed. If no notecard is found the controller falls back to the built-in S-bend map.
-3. **Touch the controller** to begin setup. It rezzes the GM, placement handler, spawner, and (if present) the MapBoard, sends each its config, and waits for all three core objects to report ready.
+3. **Touch the controller** → select **Start Game**. If multiple `map_*.cfg` notecards are in the controller's inventory a map selection dialog appears first; pick one. The controller then rezzes the GM, placement handler, spawner, and (if present) the MapBoard, sends each its config, and waits for all three core objects to report ready.
 4. Once chat shows `[CTL] Ready. Touch to start wave 1.`, **touch the controller again** to open the wave menu.
 
 The placement handler (a flat prim covering the grid) can be touched by any player to open the tower selection dialog.
@@ -252,9 +252,9 @@ If the notecard is missing, the controller falls back to the built-in S-bend map
 
 ### Adding a new map
 
-1. Create `lib/config/map_2.cfg` (or any name) with the fields above.
-2. Drop it into the controller prim's inventory.
-3. Change the notecard name in `startMapLoad()` in `controller.lsl`, or add a menu option that calls `startMapLoad("map_2.cfg", 1)`.
+1. Create a notecard named `map_<anything>.cfg` with the fields above.
+2. Drop it into the controller prim's inventory alongside any existing map notecards.
+3. Touch the controller → **Start Game** (or **Build Map**). A map selection dialog appears automatically whenever two or more `map_*.cfg` notecards are present — no script editing required.
 
 To design a map interactively in-world, use the [Map Builder](#map-builder).
 
@@ -267,7 +267,7 @@ The Map Builder is an interactive in-world tool for designing and texturing game
 ### Usage
 
 1. Touch the controller in IDLE state — the menu shows **Start Game** and **Build Map**.
-2. Select **Build Map** — the controller rezzes the `MapBuilder`, which rezzes 100 `MapTile` prims over ~20 seconds (one per 0.2s tick).
+2. Select **Build Map** — if multiple `map_*.cfg` notecards are present a map selection dialog appears first so you can choose an existing layout as a starting point. The controller then rezzes the `MapBuilder`, which rezzes 100 `MapTile` prims over ~20 seconds (one per 0.2s tick).
 3. Tiles appear color-coded by cell type:
 
 | Color | Cell type |
