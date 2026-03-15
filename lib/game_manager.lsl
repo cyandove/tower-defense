@@ -75,6 +75,7 @@ integer gConfigured      = FALSE;
 
 // Tower type registry — loaded from tower_types.cfg notecard
 list    gTowerTypes       = [];   // [type_id, obj_name, label, notecard, cost] stride=5
+string  gTowerInfoPayload = "";   // pre-formatted "label|cost|dmg|range|acc|interval|..." for TOWER_INFO
 integer gTypesLoaded      = FALSE;
 integer gGmConfigOk       = FALSE;
 key     gTypesQuery       = NULL_KEY;
@@ -126,7 +127,8 @@ startTypesLoad()
         llOwnerSay("[GM] tower_types.cfg not found.");
         return;
     }
-    gTypesLine = 0;
+    gTypesLine        = 0;
+    gTowerInfoPayload = "";
     gTypesQuery = llGetNotecardLine("tower_types.cfg", gTypesLine);
 }
 
@@ -142,6 +144,18 @@ parseTypesLine(string line)
                     llList2String(fields, 2),
                     llList2String(fields, 3),
                     cost];
+
+    // Build display payload for handler: label|cost|damage|range|accuracy|interval
+    if (llGetListLength(fields) >= 9)
+    {
+        if (gTowerInfoPayload != "") gTowerInfoPayload += "|";
+        gTowerInfoPayload += llList2String(fields, 2)
+            + "|" + llList2String(fields, 4)
+            + "|" + llList2String(fields, 5)
+            + "|" + llList2String(fields, 6)
+            + "|" + llList2String(fields, 7)
+            + "|" + llList2String(fields, 8);
+    }
 }
 
 onTypesLoaded()
@@ -150,21 +164,16 @@ onTypesLoaded()
     dbg("[GM] tower_types.cfg loaded: "
         + (string)(llGetListLength(gTowerTypes) / 5) + " types");
     if (gGmConfigOk) gConfigured = TRUE;
-    sendTowerLabels();
+    sendTowerInfo();
 }
 
-sendTowerLabels()
+sendTowerInfo()
 {
     if (!gTypesLoaded) return;
     key handler = findRegisteredHandler();
     if (handler == NULL_KEY) return;
-    string labels = "TOWER_LABELS";
-    integer count = llGetListLength(gTowerTypes) / 5;
-    integer i;
-    for (i = 0; i < count; i++)
-        labels += "|" + llList2String(gTowerTypes, i * 5 + 2);
-    llRegionSayTo(handler, -2008, labels);
-    dbg("[GM] Sent tower labels to handler");
+    llRegionSayTo(handler, -2008, "TOWER_INFO|" + gTowerInfoPayload);
+    dbg("[GM] Sent tower info to handler");
 }
 
 
@@ -642,7 +651,7 @@ handlePlacementRequest(key sender, string msg)
 
     pendingQuerySet(sender, gx, gy, avatar);
     llRegionSayTo(gCtrl_Key, -2013,
-        "CELL_QUERY|" + (string)gx + "|" + (string)gy);
+        "CELL_QUERY|" + (string)gx + "|" + (string)gy + "|" + (string)avatar);
 }
 
 // Called when controller responds with CELL_DATA.
@@ -657,6 +666,7 @@ handleCellData(string msg)
     integer gy       = (integer)llList2String(parts, 2);
     integer ctype    = (integer)llList2String(parts, 3);
     integer occupied = (integer)llList2String(parts, 4);
+    integer balance  = (integer)llList2String(parts, 5);
 
     key handler = (key)llList2String(gPendingQuery, 0);
     key avatar  = (key)llList2String(gPendingQuery, 3);
@@ -682,10 +692,10 @@ handleCellData(string msg)
     llRegionSayTo(gCtrl_Key, -2013,
         "CELL_SET|" + (string)gx + "|" + (string)gy + "|2");
 
-    // Tell handler to show the tower dialog
+    // Tell handler to show the tower dialog (balance included for UI display)
     llRegionSayTo(handler, -2008,
         "PLACEMENT_RESERVED|" + (string)gx + "|" + (string)gy
-        + "|" + (string)avatar);
+        + "|" + (string)avatar + "|" + (string)balance);
     dbg("[PL] Reserved (" + (string)gx + "," + (string)gy
         + ") for " + llKey2Name(avatar));
 }
@@ -781,7 +791,7 @@ handleRegisterMessage(key sender, string msg)
     {
         llRegionSayTo(sender, -2001, "REGISTER_OK|" + (string)obj_type);
     }
-    if (obj_type == 4) sendTowerLabels();
+    if (obj_type == 4) sendTowerInfo();
 }
 
 handleDeregisterMessage(key sender, string msg)

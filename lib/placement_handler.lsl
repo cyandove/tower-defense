@@ -66,8 +66,11 @@ key     gGM_KEY      = NULL_KEY;
 integer gRegistered  = FALSE;
 integer gDiscovering = FALSE;
 
-// Tower labels — received from GM via TOWER_LABELS message. Index+1 = type_id.
+// Tower info — received from GM via TOWER_INFO message.
+// gTowerLabels: label per tower (index+1 = type_id); used for buttons and type lookup.
+// gTowerData:   [cost, damage, range, accuracy, interval, ...]  stride=5 parallel to gTowerLabels.
 list gTowerLabels = [];
+list gTowerData   = [];
 
 
 // =============================================================================
@@ -216,16 +219,44 @@ integer labelToTypeId(string label)
     return idx + 1;
 }
 
-showTowerDialog(key avatar, integer gx, integer gy)
+showTowerDialog(key avatar, integer gx, integer gy, integer balance)
 {
-    if (gTowerLabels == [])
+    if (llGetListLength(gTowerLabels) == 0)
     {
         llRegionSayTo(avatar, 0, "Tower types not loaded yet.");
         return;
     }
-    string prompt = "Select tower for grid ("
-        + (string)gx + "," + (string)gy + ").\n"
-        + "Expires in " + (string)DIALOG_TIMEOUT + "s.";
+
+    integer count = llGetListLength(gTowerLabels);
+    integer i;
+
+    // --- Chat: full stat card ---
+    string chat = "=== Tower Stats ===";
+    for (i = 0; i < count; i++)
+    {
+        integer base     = i * 5;
+        integer cost     = llList2Integer(gTowerData, base);
+        integer damage   = (integer)(llList2Float(gTowerData, base + 1) + 0.5);
+        integer range    = (integer)(llList2Float(gTowerData, base + 2) + 0.5);
+        integer accuracy = (integer)(llList2Float(gTowerData, base + 3) * 100.0 + 0.5);
+        integer interval = (integer)(llList2Float(gTowerData, base + 4) + 0.5);
+        chat += "\n[" + llList2String(gTowerLabels, i) + "]  " + (string)cost + " credits"
+            + "\n  Dmg: "      + (string)damage
+            + "  Range: "      + (string)range    + "m"
+            + "  Accuracy: "   + (string)accuracy + "%"
+            + "  Fire: every " + (string)interval + "s";
+    }
+    llRegionSayTo(avatar, 0, chat);
+
+    // --- Dialog: balance + per-tower costs ---
+    string prompt = "Balance: " + (string)balance + " credits\n";
+    for (i = 0; i < count; i++)
+    {
+        integer cost = llList2Integer(gTowerData, i * 5);
+        prompt += "\n" + llList2String(gTowerLabels, i) + "  —  " + (string)cost + "cr";
+    }
+    prompt += "\n\nSelect a tower:";
+
     integer handle = llListen(gDialogChannel, "", avatar, "");
     llDialog(avatar, prompt, gTowerLabels, gDialogChannel);
     addPendingDialog(avatar, gx, gy, handle);
@@ -278,7 +309,10 @@ handlePlacementResponse(string msg)
 
     if (cmd == "PLACEMENT_RESERVED")
     {
-        showTowerDialog(avatar, gx, gy);
+        integer balance = 0;
+        if (llGetListLength(parts) >= 5)
+            balance = (integer)llList2String(parts, 4);
+        showTowerDialog(avatar, gx, gy, balance);
     }
     else if (cmd == "PLACEMENT_DENIED")
     {
@@ -340,10 +374,22 @@ default
         else if (channel == PLACEMENT_RESPONSE_CHANNEL && id == gGM_KEY)
         {
             list parts = llParseString2List(msg, ["|"], []);
-            if (llList2String(parts, 0) == "TOWER_LABELS")
+            if (llList2String(parts, 0) == "TOWER_INFO")
             {
-                gTowerLabels = llDeleteSubList(parts, 0, 0);
-                dbg("[PH] Received tower labels: " + llList2CSV(gTowerLabels));
+                gTowerLabels = [];
+                gTowerData   = [];
+                integer n    = llGetListLength(parts);
+                integer i;
+                for (i = 1; i + 5 < n; i += 6)
+                {
+                    gTowerLabels += [llList2String(parts, i)];
+                    gTowerData   += [(integer)llList2String(parts, i + 1),
+                                     (float)llList2String(parts, i + 2),
+                                     (float)llList2String(parts, i + 3),
+                                     (float)llList2String(parts, i + 4),
+                                     (float)llList2String(parts, i + 5)];
+                }
+                dbg("[PH] Received tower info: " + llList2CSV(gTowerLabels));
             }
             else handlePlacementResponse(msg);
         }

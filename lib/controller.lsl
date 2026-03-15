@@ -863,18 +863,26 @@ handleControllerMessage(key sender, string msg)
         return;
     }
 
-    // Cell state query from GM: CELL_QUERY|gx|gy
+    // Cell state query from GM: CELL_QUERY|gx|gy|avatar
     if (cmd == "CELL_QUERY")
     {
         if (llGetListLength(parts) < 3) return;
         integer gx = (integer)llList2String(parts, 1);
         integer gy = (integer)llList2String(parts, 2);
+        integer balance = STARTING_BALANCE;
+        if (llGetListLength(parts) >= 4)
+        {
+            key avatar = (key)llList2String(parts, 3);
+            integer pi = playerIndex(avatar);
+            if (pi != -1) balance = llList2Integer(gPlayerBalance, pi);
+        }
         llRegionSayTo(sender, CTRL,
             "CELL_DATA"
             + "|" + (string)gx
             + "|" + (string)gy
             + "|" + (string)cellType(gx, gy)
-            + "|" + (string)cellOccupied(gx, gy));
+            + "|" + (string)cellOccupied(gx, gy)
+            + "|" + (string)balance);
         return;
     }
 
