@@ -128,14 +128,14 @@ Tower and enemy parameters are `key=value` text files. `#` begins a comment; bla
 
 ## Adding a custom tower type
 
-Tower types are identified by an integer **type ID** (1-based). Adding a new type requires changes in four places — no other files need touching.
+Tower types are registered in `tower_types.cfg` — a pipe-delimited notecard shared across the GM, tower, and placement handler. Adding a new type requires **no script editing**: add a stats notecard and one line to the registry.
 
-### 1. Create the config notecard
+### 1. Create the stats notecard
 
-Create a new file in `lib/config/` following the notecard format described above. Example for a cannon tower:
+Create a new file in `lib/config/` using the same key=value format as the existing tower notecards:
 
 ```
-# Cannon Tower config
+# tower_cannon.cfg
 tower_type_name=Cannon Tower
 damage=60.0
 range=8.0
@@ -145,72 +145,35 @@ attack_interval=3.5
 targeting_strategy=0
 ```
 
-### 2. Register the notecard in `tower.lsl`
+### 2. Add a line to `tower_types.cfg`
 
-Add the notecard filename to the `NOTECARD_NAMES` list. The list index is `type_id - 1`, so append to give the next available ID:
-
-```lsl
-list NOTECARD_NAMES = ["tower_basic.cfg", "tower_sniper.cfg", "tower_cannon.cfg"];
-//                     type 1              type 2               type 3 (new)
+```
+# type_id|object_name|label|notecard|cost|damage|range|accuracy|attack_interval
+1|TowerBasic|Basic|tower_basic.cfg|50|25|10|0.85|2.0
+2|TowerSniper|Sniper|tower_sniper.cfg|100|60|18|0.95|5.0
+3|TowerCannon|Cannon|tower_cannon.cfg|75|60|8|0.70|3.5
 ```
 
-### 3. Register the type in `game_manager.lsl`
+`object_name` is the inventory name of the prim the GM will rez (`llRezObject`). All types can share a single object, or each can use a distinct prim with its own shape or animation scripts. Either way, every prim must contain `tower.lsl` — the type ID encoded in `start_param` at rez time determines which stats notecard is loaded.
 
-Add a branch to both `towerObjName()` and `towerLabel()`:
+### 3. Update prim inventories
 
-```lsl
-string towerObjName(integer type_id)
-{
-    if (type_id == 1) return "Tower";
-    if (type_id == 2) return "Tower";
-    if (type_id == 3) return "Tower";   // new — shares the same object
-    return "";
-}
+- Drop the new stats notecard (e.g. `tower_cannon.cfg`) into every **Tower** prim.
+- If using a distinct object name, add a prim with that name to the **GameManager** prim's inventory.
+- Update `tower_types.cfg` in the **GameManager** and **Tower** prim inventories (both need the current copy).
 
-string towerLabel(integer type_id)
-{
-    if (type_id == 1) return "Basic";
-    if (type_id == 2) return "Sniper";
-    if (type_id == 3) return "Cannon";  // new
-    return "";
-}
-```
+The GM, placement handler, and tower all read `tower_types.cfg` at startup — no script recompilation needed. The placement handler button list and cost display update automatically.
 
-`towerObjName()` is the name passed to `llRezObject`, so it must exactly match an object in the **GameManager prim's inventory**. All types can share one object (as above), or each type can use a distinct prim with its own shape, size, or animation scripts:
-
-```lsl
-string towerObjName(integer type_id)
-{
-    if (type_id == 1) return "Tower";         // short stubby prim
-    if (type_id == 2) return "Tower Sniper";  // tall thin prim
-    if (type_id == 3) return "Tower Cannon";  // wide barrel prim
-    return "";
-}
-```
-
-When using distinct object names, add each named object to the GameManager prim's inventory. All objects must still contain `tower.lsl` — the type ID encoded in `start_param` at rez time determines which notecard is loaded, regardless of which object was rezzed.
-
-### 4. Add the label to `placement_handler.lsl`
-
-Append the label string to `TOWER_LABELS`. The list index must match: `index + 1 == type_id`.
-
-```lsl
-list TOWER_LABELS = ["Basic", "Sniper", "Cannon"];
-//                   type 1   type 2    type 3 (new)
-```
-
-This label appears as a button in the `llDialog` tower selection popup. Note that `llDialog` supports a maximum of **12 buttons**, so the game supports at most 12 tower types.
+Note that `llDialog` supports a maximum of **12 buttons**, so the game supports at most 12 tower types.
 
 ### Summary checklist
 
-| File | Change |
+| Step | What to do |
 |---|---|
-| `lib/config/tower_<name>.cfg` | Create notecard with stat keys |
-| `tower.lsl` — `NOTECARD_NAMES` | Append `"tower_<name>.cfg"` |
-| `game_manager.lsl` — `towerObjName()` | Add `if (type_id == N) return "<ObjName>";` |
-| `game_manager.lsl` — `towerLabel()` | Add `if (type_id == N) return "<Label>";` |
-| `placement_handler.lsl` — `TOWER_LABELS` | Append `"<Label>"` |
-| GameManager inventory | Add object named `<ObjName>` containing `tower.lsl` |
+| Create stats notecard | `lib/config/tower_<name>.cfg` with stat keys |
+| Register type | Add line to `tower_types.cfg`: `id\|obj_name\|label\|notecard\|cost\|damage\|range\|accuracy\|interval` |
+| Tower prim inventory | Drop in new stats notecard + updated `tower_types.cfg` |
+| GameManager inventory | Add Tower object (if new prim shape) + updated `tower_types.cfg` |
 
 ---
 
